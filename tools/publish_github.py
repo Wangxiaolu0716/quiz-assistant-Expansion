@@ -34,6 +34,18 @@ import urllib.request
 API = "https://api.github.com"
 UPLOADS = "https://uploads.github.com"
 
+# 本机访问 GitHub 走代理；git 的 proxy 配置 urllib 不读，得自己装上。
+# 优先级：环境变量 HTTPS_PROXY / https_proxy -> 默认 127.0.0.1:7890（如果有监听）。
+def _opener():
+    handlers = []
+    proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy") or os.environ.get("HTTP_PROXY")
+    if proxy:
+        handlers.append(urllib.request.ProxyHandler({"https": proxy, "http": proxy}))
+    return urllib.request.build_opener(*handlers)
+
+
+OPENER = _opener()
+
 
 def load_env():
     """读项目根目录的 .env，不覆盖已存在的环境变量。"""
@@ -64,7 +76,9 @@ def request(method, url, token, data=None, content_type="application/json", raw=
     if body is not None:
         req.add_header("Content-Type", content_type)
     try:
-        with urllib.request.urlopen(req, timeout=180) as resp:
+        # 附件上传单独放宽：50MB 走代理常常要几分钟
+        timeout = 1800 if raw else 120
+        with OPENER.open(req, timeout=timeout) as resp:
             payload = resp.read()
             if not payload:
                 return {}
