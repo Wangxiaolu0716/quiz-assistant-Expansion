@@ -419,7 +419,7 @@ class LLMRepository(
         private const val DEFAULT_MAX_TOKENS = 640
 
         /** 联网模式输出上限：要装下 JSON + 简短依据。 */
-        private const val RESPONSES_MAX_OUTPUT_TOKENS = 512
+        private const val RESPONSES_MAX_OUTPUT_TOKENS = 1024
 
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)

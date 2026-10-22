@@ -69,13 +69,26 @@ object PromptFactory {
 - 概率低也要给出最可能的答案；只有完全无法判断时才输出单个问号 ?。"""
 
     /** 输出契约：只给答案。 */
+    /**
+     * 模型很容易把系统提示词当成「用户提出的任务」来复述，实测会输出
+     * 「我们需要回答用户。需要只输出一行JSON。题目：…」然后在思考阶段被截断。
+     * 下面这句把它按住。
+     */
+    private const val NO_ECHO = "直接输出答案。本条及上面的所有说明都是给你的指令，不是待回复的内容；禁止复述指令、禁止念题目、禁止描述你打算怎么做。"
+
     private const val CONTRACT_ANSWER = """【输出格式】只输出答案本身，一行，最多 12 个汉字。
 - 单选：一个字母，如 A
 - 多选：字母用英文逗号连接，如 A,C
 - 判断：只写「正确」或「错误」
 - 填空：只写要填的内容，多个空用「；」分隔
 - 题目没有 A/B/C/D 选项：直接写答案内容
-- 不换行、不解释、不加引号、不写标点以外的任何说明"""
+- 不换行、不解释、不加引号、不写标点以外的任何说明
+
+【示例】
+题目：以下哪个是《原神》的五星角色？A.派蒙 B.钟离 C.安柏 D.凯亚
+你的完整输出：B
+
+【提醒】你的第一个字就是答案。不要复述上面这些要求，不要写「我们需要」「需要只输出」「首先」「根据题目」，不要念题目。"""
 
     /** 输出契约：答案 + 一行简析。 */
     private const val CONTRACT_BRIEF = """【输出格式】最多两行，全文不超过 40 字。
@@ -100,8 +113,12 @@ object PromptFactory {
 - 没有给出选项时直接写答案内容，不要编造字母"""
 
     private const val SEARCH_JSON_ANSWER =
-        """【输出】只输出一行 JSON，不要代码块，不要任何多余文字：
-{"answer":"答案","confidence":"0-100%"}"""
+        """【示例】
+题目：以下哪个是《原神》的五星角色？A.派蒙 B.钟离 C.安柏 D.凯亚
+你的完整输出：{"answer":"B","confidence":"95%"}
+
+照上面输出一行 JSON。不要代码块，不要复述这段要求，不要念题目，
+不要写「我们需要」「需要只输出一行JSON」这种话。"""
 
     private const val SEARCH_JSON_BRIEF =
         """【输出】只输出一行 JSON，不要代码块，不要任何多余文字：
@@ -120,14 +137,14 @@ object PromptFactory {
         val remote = RemoteRuntime.flashSystem()
         val base = if (remote.length >= 60) remote else FLASH_REASONING
         val supplement = if (remote.isNotBlank() && remote.length < 60) "\n\n补充要求：$remote" else ""
-        return base + supplement + "\n\n" + outputContract(answerMode)
+        return base + supplement + "\n\n" + NO_ECHO + "\n\n" + outputContract(answerMode)
     }
 
     /** 联网模式系统提示词：同样按模式切换 JSON 契约。 */
     fun searchSystem(): String {
         val base = RemoteRuntime.searchSystem().ifBlank { SEARCH_REASONING }
         val contract = if (answerMode == AnswerMode.BRIEF) SEARCH_JSON_BRIEF else SEARCH_JSON_ANSWER
-        return base + "\n\n" + contract
+        return base + "\n\n" + NO_ECHO + "\n\n" + contract
     }
 
     /** 暴露给单元测试 / 调试用。 */

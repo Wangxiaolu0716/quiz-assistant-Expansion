@@ -289,7 +289,7 @@ object OverlayController {
 
     private fun String.toOverlayText(mode: com.quizassist.model.AnswerMode): String {
         val answer = extractAnswer()
-        if (answer.isBlank()) return ""
+        if (answer.isBlank()) return "没抓到答案，重拍一次"
         return if (mode == com.quizassist.model.AnswerMode.BRIEF) {
             val lines = answer.lines().map { it.trim() }.filter { it.isNotBlank() }
             lines.take(2).joinToString("\n").take(160)
@@ -311,23 +311,27 @@ object OverlayController {
         val cleaned = replace(Regex("""(?i)\bassistant\b[:：]?\s*"""), "").trim()
         if (cleaned.isEmpty()) return ""
 
-        Regex("""(?:最终答案|正确答案|答案|Answer)\s*[:：]\s*([^
-]+)""")
-            .findAll(cleaned)
-            .lastOrNull()
-            ?.groupValues?.getOrNull(1)
-            ?.trim()
-            ?.stripAnswerLabel()
-            ?.takeIf { it.isNotBlank() }
-            ?.let { return it }
+        // 1) JSON（联网模式）：{"answer":"B",...}，被截断也要尽量捞出来
+        Regex("\"answer\"\\s*:\\s*\"([^\"]{1,40})\"")
+            .findAll(cleaned).lastOrNull()?.groupValues?.getOrNull(1)?.trim()
+            ?.stripAnswerLabel()?.takeIf { it.isNotBlank() }?.let { return it }
+
+        // 2) 显式标记：答案：B / 答案是 B / 正确答案为 B / 最终答案 B
+        Regex("""(?:最终答案|正确答案|答案)\s*(?:是|为|[:：])?\s*([A-D](?:\s*[,，、/]\s*[A-D])*|正确|错误|对|错|√|×|[^\n。；;，,]{1,30})""")
+            .findAll(cleaned).lastOrNull()?.groupValues?.getOrNull(1)?.trim()
+            ?.stripAnswerLabel()?.takeIf { it.isNotBlank() }?.let { return it }
 
         val lines = cleaned.lines().map { it.trim().stripAnswerLabel() }.filter { it.isNotBlank() }
         if (lines.isEmpty()) return ""
 
+        // 3) 长得像答案的独立行
         lines.lastOrNull { ANSWER_SHAPE.matches(it) }?.let { return it }
 
-        return (lines.filterNot { THINKING_HINT.containsMatchIn(it) }.lastOrNull()
-            ?: lines.lastOrNull()).orEmpty()
+        // 4) 丢掉自言自语后如果什么都不剩，宁可显示「未识别」也不把思考念出来
+        val meaningful = lines.filterNot { THINKING_HINT.containsMatchIn(it) }
+        val last = meaningful.lastOrNull() ?: return ""
+        // 仍然太长，说明整段都是解释，判为没抓答案
+        return if (last.length > 30) "" else last
     }
 
     private fun String.stripAnswerLabel(): String =
