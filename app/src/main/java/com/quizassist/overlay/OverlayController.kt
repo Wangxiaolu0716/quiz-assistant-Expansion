@@ -307,35 +307,81 @@ object OverlayController {
      *   2. 长得像答案的行（单个字母 / A,C / 正确 / 错误 / √）——从后往前找
      *   3. 过滤掉明显的思考行后，取最后一行
      */
+    /**
+     * 从模型输出里捞出真正的答案。
+     *
+     * 优先级从硬到软：
+     *   1. 锚点 `ANSWER: B` —— 提示词要求「写了推理就必须单独一行给锚点」，最可信
+     *   2. JSON 的 `"answer"` 字段（联网模式，截断也能捞）
+     *   3. `答案：B` / `答案是 B` 这类标记 —— 但会收集**全部**候选做一致性判断
+     *   4. 长得像答案的独立行
+     *   5. 去掉自言自语后的末行（太长就判为没抓到）
+     *
+     * 第 3 步是这次的重点：模型左右互搏时会先写「答案可能是 A」再改成 B，
+     * 直接取最后一个太赌；现在先看候选是否唯一，不唯一才靠转折词裁决，
+     * 仍然拿不准就明说「AI 拿不准」，不把中间那个错答案顶上去。
+     */
     private fun String.extractAnswer(): String {
         val cleaned = replace(Regex("""(?i)\bassistant\b[:：]?\s*"""), "").trim()
         if (cleaned.isEmpty()) return ""
 
-        // 1) JSON（联网模式）：{"answer":"B",...}，被截断也要尽量捞出来
+        // 1) 锚点
+        ANCHOR.findAll(cleaned).lastOrNull()
+            ?.groupValues?.getOrNull(1)?.trim()?.stripAnswerLabel()
+            ?.takeIf { it.isNotBlank() }?.let { return it }
+
+        // 2) JSON
         Regex("\"answer\"\\s*:\\s*\"([^\"]{1,40})\"")
             .findAll(cleaned).lastOrNull()?.groupValues?.getOrNull(1)?.trim()
             ?.stripAnswerLabel()?.takeIf { it.isNotBlank() }?.let { return it }
 
-        // 2) 显式标记：答案：B / 答案是 B / 正确答案为 B / 最终答案 B
-        Regex("""(?:最终答案|正确答案|答案)\s*(?:是|为|[:：])?\s*([A-D](?:\s*[,，、/]\s*[A-D])*|正确|错误|对|错|√|×|[^\n。；;，,]{1,30})""")
-            .findAll(cleaned).lastOrNull()?.groupValues?.getOrNull(1)?.trim()
-            ?.stripAnswerLabel()?.takeIf { it.isNotBlank() }?.let { return it }
+        // 3) 标记答案：收集全部候选
+        val labelled = LABELLED.findAll(cleaned)
+            .mapNotNull { it.groupValues.getOrNull(1)?.trim()?.stripAnswerLabel() }
+            .filter { it.isNotBlank() }
+            .toList()
+        if (labelled.isNotEmpty()) {
+            val distinct = labelled.map { normalizeAnswer(it) }.distinct()
+            if (distinct.size == 1) return labelled.last()
+            // 多个不同候选：有转折词就信最后一个，否则不敢猜
+            return if (CONTRADICTION.containsMatchIn(cleaned)) labelled.last() else UNCERTAIN
+        }
 
         val lines = cleaned.lines().map { it.trim().stripAnswerLabel() }.filter { it.isNotBlank() }
         if (lines.isEmpty()) return ""
 
-        // 3) 长得像答案的独立行
+        // 4) 长得像答案的独立行
         lines.lastOrNull { ANSWER_SHAPE.matches(it) }?.let { return it }
 
-        // 4) 丢掉自言自语后如果什么都不剩，宁可显示「未识别」也不把思考念出来
+        // 5) 去掉思考行后的末行
         val meaningful = lines.filterNot { THINKING_HINT.containsMatchIn(it) }
         val last = meaningful.lastOrNull() ?: return ""
-        // 仍然太长，说明整段都是解释，判为没抓答案
         return if (last.length > 30) "" else last
+    }
+
+    /** 只保留字母/判断词的骨架，用来判断两个候选是不是同一个答案。 */
+    private fun normalizeAnswer(value: String): String {
+        val letters = Regex("[A-Da-d]").findAll(value).map { it.value.uppercase() }.toList()
+        if (letters.size == 1 && value.trim().length <= 4) return letters.first()
+        if (letters.size >= 2 && value.trim().length <= 8) return letters.sorted().joinToString(",")
+        return value.trim().lowercase()
     }
 
     private fun String.stripAnswerLabel(): String =
         replace(Regex("""^(答案|答|选|选择|正确选项|解析|理由|依据|分析)\s*[:：]\s*"""), "").trim()
+
+    /** 提示词要求的锚点：写了推理就必须单独一行给这个。 */
+    private val ANCHOR = Regex("""(?i)\bANSWER\s*[:：]\s*([^\n]{1,30})""")
+
+    /** 「答案：B」「答案是 B」「正确答案为 B」 */
+    private val LABELLED = Regex(
+        """(?:最终答案|正确答案|答案)\s*(?:是|为|[:：])?\s*([A-D](?:\s*[,，、/]\s*[A-D])*|正确|错误|对|错|√|×|[^\n。；;，,]{1,30})""",
+    )
+
+    /** 出现这些词，说明前面那个被推翻了。 */
+    private val CONTRADICTION = Regex("""(?:但|不过|可是|其实|应该是|改为|修正|不对|推翻|重新看)""")
+
+    private const val UNCERTAIN = "AI 拿不准，重拍一次"
 
     /** 单个字母、字母组合、判断词，或者很短的选项式文本。 */
     private val ANSWER_SHAPE = Regex(
