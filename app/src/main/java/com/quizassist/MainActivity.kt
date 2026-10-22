@@ -21,6 +21,8 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -90,6 +92,7 @@ import com.quizassist.cache.HistoryItem
 import com.quizassist.model.AnswerMode
 import com.quizassist.model.AppSettings
 import com.quizassist.model.ModelPreset
+import com.quizassist.network.LLMRepository
 import com.quizassist.model.ModelPresets
 import com.quizassist.model.ProviderConfig
 import com.quizassist.model.RoiBox
@@ -116,6 +119,9 @@ class MainActivity : ComponentActivity() {
 
     /** 手动检查更新时防重复点击。 */
     private var checkingUpdate by mutableStateOf(false)
+
+    /** 拉模型列表用。 */
+    private val llm = LLMRepository()
 
     private val importQuestionBank = registerForActivityResult(
         ActivityResultContracts.OpenDocument(),
@@ -182,6 +188,7 @@ class MainActivity : ComponentActivity() {
                         onStartProjection = { requestProjection() },
                         onStartOverlay = { showOverlay() },
                         onCheckUpdate = { checkUpdateNow() },
+                        onFetchModels = { base, key -> llm.fetchModels(base, key) },
                     )
 
                     announcementQueue.firstOrNull()?.let { announcement ->
@@ -428,6 +435,7 @@ private fun AppRoot(
     onStartProjection: () -> Unit,
     onStartOverlay: () -> Unit,
     onCheckUpdate: () -> Unit,
+    onFetchModels: suspend (String, String) -> List<String>,
 ) {
     AnimatedContent(
         targetState = showSponsor,
@@ -457,6 +465,7 @@ private fun AppRoot(
                 onStartOverlay = onStartOverlay,
                 onSponsor = { onSponsorChange(true) },
                 onCheckUpdate = onCheckUpdate,
+                onFetchModels = onFetchModels,
             )
         }
     }
@@ -528,6 +537,7 @@ private fun SettingsScreen(
     onStartOverlay: () -> Unit,
     onSponsor: () -> Unit,
     onCheckUpdate: () -> Unit,
+    onFetchModels: suspend (String, String) -> List<String>,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -596,11 +606,13 @@ private fun SettingsScreen(
                         Tab.Model -> ModelTab(
                             draft = draft,
                             onChange = { draft = it },
+                            onFetchModels = onFetchModels,
                         )
 
                         Tab.Answer -> AnswerTab(
                             draft = draft,
                             onChange = { draft = it },
+                            onFetchModels = onFetchModels,
                             bankInfo = bankInfo,
                             importMessage = importMessage,
                             maxWaitText = maxWaitText,
@@ -786,7 +798,11 @@ private fun BottomBar(onStartProjection: () -> Unit, onStartOverlay: () -> Unit)
 // ---------------------------------------------------------------- 三个 Tab
 
 @Composable
-private fun ModelTab(draft: AppSettings, onChange: (AppSettings) -> Unit) {
+private fun ModelTab(
+    draft: AppSettings,
+    onChange: (AppSettings) -> Unit,
+    onFetchModels: suspend (String, String) -> List<String>,
+) {
     Card8("回答风格", "悬浮窗空间有限，选你想要的输出长度") {
         AnswerModePicker(draft.answerMode) { onChange(draft.copy(answerMode = it)) }
     }
@@ -795,6 +811,7 @@ private fun ModelTab(draft: AppSettings, onChange: (AppSettings) -> Unit) {
             presets = ModelPresets.flash,
             provider = draft.flashProvider,
             onChange = { onChange(draft.copy(flashProvider = it)) },
+            onFetchModels = onFetchModels,
         )
     }
 }
@@ -803,6 +820,7 @@ private fun ModelTab(draft: AppSettings, onChange: (AppSettings) -> Unit) {
 private fun AnswerTab(
     draft: AppSettings,
     onChange: (AppSettings) -> Unit,
+    onFetchModels: suspend (String, String) -> List<String>,
     bankInfo: QuestionBankStore.ImportInfo,
     importMessage: String,
     maxWaitText: String,
@@ -1033,6 +1051,7 @@ private fun ProviderEditor(
     presets: List<ModelPreset>,
     provider: ProviderConfig,
     onChange: (ProviderConfig) -> Unit,
+    onFetchModels: suspend (String, String) -> List<String>,
 ) {
     var expanded by remember { mutableStateOf(false) }
     var reasoningExpanded by remember { mutableStateOf(false) }
@@ -1064,6 +1083,13 @@ private fun ProviderEditor(
     SoftField(provider.baseUrl, Zh.baseUrl) { onChange(provider.copy(baseUrl = it)) }
     SoftField(provider.apiKey, Zh.apiKey, password = true) { onChange(provider.copy(apiKey = it)) }
     SoftField(provider.modelName, Zh.modelName) { onChange(provider.copy(modelName = it)) }
+
+    ModelListRow(
+        baseUrl = provider.baseUrl,
+        apiKey = provider.apiKey,
+        onFetchModels = onFetchModels,
+        onPick = { onChange(provider.copy(modelName = it)) },
+    )
 
     SwitchRow(Zh.searchHint, provider.enableSearchHint) { onChange(provider.copy(enableSearchHint = it)) }
 
@@ -1130,6 +1156,92 @@ private fun NumberField(
             unfocusedContainerColor = Ink.tint,
         ),
     )
+}
+
+/**
+ * 「获取模型列表」：拉 GET /models，弹窗里点一个填进模型名。
+ *
+ * 很多服务商的列表有几百条，这里直接给个可滚动列表，不做搜索框 ——
+ * 答题场景换模型不频繁，多一步搜索反而啰嗦。
+ */
+@Composable
+private fun ModelListRow(
+    baseUrl: String,
+    apiKey: String,
+    onFetchModels: suspend (String, String) -> List<String>,
+    onPick: (String) -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var loading by remember { mutableStateOf(false) }
+    var hint by remember { mutableStateOf("") }
+    var failed by remember { mutableStateOf(false) }
+    var models by remember { mutableStateOf<List<String>>(emptyList()) }
+    var showDialog by remember { mutableStateOf(false) }
+
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        OutlinedButton(
+            onClick = {
+                if (loading) return@OutlinedButton
+                scope.launch {
+                    loading = true
+                    hint = ""
+                    failed = false
+                    runCatching { onFetchModels(baseUrl, apiKey) }
+                        .onSuccess {
+                            models = it
+                            showDialog = true
+                            hint = "共 ${it.size} 个模型"
+                        }
+                        .onFailure {
+                            failed = true
+                            hint = it.message.orEmpty().ifBlank { "获取失败" }
+                        }
+                    loading = false
+                }
+            },
+            shape = RoundedCornerShape(11.dp),
+        ) {
+            Text(
+                text = if (loading) "获取中…" else "获取模型列表",
+                fontSize = 13.sp,
+            )
+        }
+        if (hint.isNotBlank()) {
+            Text(
+                text = hint,
+                fontSize = 12.sp,
+                color = if (failed) Color(0xFFB91C1C) else Ink.muted,
+                maxLines = 2,
+            )
+        }
+    }
+
+    if (showDialog) {
+        AlertDialog(
+            onDismissRequest = { showDialog = false },
+            title = { Text("选择模型（${models.size}）", fontSize = 16.sp) },
+            text = {
+                LazyColumn(modifier = Modifier.heightIn(max = 420.dp)) {
+                    items(models) { name ->
+                        Text(
+                            text = name,
+                            fontSize = 13.sp,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    onPick(name)
+                                    showDialog = false
+                                }
+                                .padding(vertical = 11.dp),
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showDialog = false }) { Text("关闭") }
+            },
+        )
+    }
 }
 
 @Composable

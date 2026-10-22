@@ -8,6 +8,7 @@ import com.quizassist.prompt.PromptFactory
 import com.quizassist.prompt.RemoteRuntime
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -39,6 +40,56 @@ class LLMRepository(
         encodeDefaults = true
         explicitNulls = false
         isLenient = true
+    }
+
+    /**
+     * 拉取服务商的模型列表（GET /models）。
+     *
+     * baseUrl 的写法五花八门，这里做一次归一化：
+     *   https://api.openai.com/v1/          -> https://api.openai.com/v1/models
+     *   https://api.deepseek.com            -> https://api.deepseek.com/v1/models
+     *   https://x.com/v1/chat/completions   -> https://x.com/v1/models
+     */
+    suspend fun fetchModels(baseUrl: String, apiKey: String): List<String> =
+        withContext(Dispatchers.IO) {
+            require(apiKey.isNotBlank()) { "先填 API Key" }
+            val url = modelsUrl(baseUrl)
+            require(url.isNotBlank()) { "先填 Base URL" }
+
+            val request = Request.Builder()
+                .url(url)
+                .get()
+                .header("Authorization", "Bearer " + apiKey.trim())
+                .header("Accept", "application/json")
+                .build()
+
+            val body = client.newCall(request).execute().use { response ->
+                val text = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    throw IllegalStateException(
+                        "HTTP " + response.code + " " + text.take(120).replace("\n", " "),
+                    )
+                }
+                text
+            }
+
+            val parsed = runCatching { json.decodeFromString<ModelsResponse>(body) }.getOrNull()
+                ?: throw IllegalStateException("返回不是标准模型列表，前 80 字：" + body.take(80))
+
+            parsed.data
+                .mapNotNull { it.id?.trim() }
+                .filter { it.isNotBlank() }
+                .distinct()
+                .sorted()
+                .also { if (it.isEmpty()) throw IllegalStateException("列表是空的，检查 Base URL 是否正确") }
+        }
+
+    private fun modelsUrl(baseUrl: String): String {
+        var base = baseUrl.trim().trimEnd('/')
+        if (base.isEmpty()) return ""
+        base = base.removeSuffix("/chat/completions").removeSuffix("/completions").trimEnd('/')
+        // 已经带版本段（/v1、/v4、/api/paas/v3…）就直接补 /models，否则按 OpenAI 惯例补 /v1/models
+        return if (Regex("/v\\d+").containsMatchIn(base)) base + "/models" else base + "/v1/models"
     }
 
     fun streamAnswer(
@@ -400,6 +451,16 @@ class LLMRepository(
                 message.contains("unknown parameter", ignoreCase = true) ||
                 message.contains("unsupported", ignoreCase = true)
             )
+
+    @kotlinx.serialization.Serializable
+    private data class ModelsResponse(
+        val data: List<ModelItem> = emptyList(),
+    )
+
+    @kotlinx.serialization.Serializable
+    private data class ModelItem(
+        val id: String? = null,
+    )
 
     private class LlmHttpException(
         val code: Int,
