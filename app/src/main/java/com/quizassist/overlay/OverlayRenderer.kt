@@ -19,6 +19,7 @@ import com.quizassist.model.SolveSnapshot
 class OverlayRenderer(
     context: Context,
     private val onCapture: () -> Unit,
+    private val onAutoCaptureToggle: () -> Unit,
     private val onCollapseChanged: (Boolean) -> Unit,
 ) {
     val root: FrameLayout = FrameLayout(context)
@@ -27,9 +28,8 @@ class OverlayRenderer(
     private val status = TextView(context)
     private val flashTitle = TextView(context)
     private val flash = TextView(context)
-    private val deepTitle = TextView(context)
-    private val deep = TextView(context)
     private val copy = Button(context)
+    private val autoCapture = Button(context)
     private var copyText = ""
 
     val dragTargets: List<View>
@@ -47,19 +47,15 @@ class OverlayRenderer(
 
     fun render(snapshot: SolveSnapshot) {
         status.text = when (snapshot.state) {
-            OverlayState.Idle -> "\u7b49\u5f85"
-            OverlayState.Capturing -> "\u6b63\u5728\u622a\u56fe..."
-            OverlayState.Recognizing -> "\u6b63\u5728\u8bc6\u522b..."
-            OverlayState.FlashReady -> "\u5feb\u901f\u7b54\u6848\u5df2\u8fd4\u56de"
-            OverlayState.DeepThinking -> "\u6df1\u5ea6\u6a21\u578b\u601d\u8003\u4e2d..."
-            OverlayState.DeepReady -> "\u6df1\u5ea6\u7b54\u6848\u5df2\u66f4\u65b0"
-            OverlayState.Error -> "\u53d1\u751f\u9519\u8bef"
+            OverlayState.Idle -> "等待"
+            OverlayState.Capturing -> "正在截图..."
+            OverlayState.Recognizing -> "正在识别..."
+            OverlayState.FlashReady -> "快速答案已返回"
+            OverlayState.Error -> "发生错误"
         } + snapshot.notice.takeIf { it.isNotBlank() }?.let { "\n$it" }.orEmpty()
-        flashTitle.text = "\u5feb\u901f\u6a21\u578b ${snapshot.flashElapsedMs?.let { "(${it}ms)" }.orEmpty()}"
-        deepTitle.text = "\u6df1\u5ea6\u6a21\u578b ${snapshot.deepElapsedMs?.let { "(${it}ms)" }.orEmpty()}"
+        flashTitle.text = "快速回答 ${snapshot.flashElapsedMs?.let { "(${it}ms)" }.orEmpty()}"
         flash.text = snapshot.flashText.ifBlank { "-" }
-        deep.text = snapshot.deepText.ifBlank { "-" }
-        copyText = snapshot.deepText.ifBlank { snapshot.flashText }
+        copyText = snapshot.flashText
     }
 
     fun appendFlash(token: String) {
@@ -68,25 +64,25 @@ class OverlayRenderer(
         copyText = flash.text.toString()
     }
 
-    fun appendDeep(token: String) {
-        if (deep.text == "-") deep.text = ""
-        deep.append(token)
-        copyText = deep.text.toString()
-    }
-
     fun setCollapsed(value: Boolean, notify: Boolean = true) {
         ball.visibility = if (value) View.VISIBLE else View.GONE
         panel.visibility = if (value) View.GONE else View.VISIBLE
         if (notify) onCollapseChanged(value)
     }
 
+    fun setAutoCaptureActive(active: Boolean) {
+        autoCapture.text = if (active) "停止连拍" else "连续截图"
+        autoCapture.setTextColor(if (active) 0xFFE5484D.toInt() else 0xFF0F766E.toInt())
+    }
+
     private fun setupBall() {
-        ball.text = "\u7b54"
-        ball.textSize = 20f
+        ball.text = "A"
+        ball.textSize = 26f
         ball.typeface = Typeface.DEFAULT_BOLD
         ball.gravity = Gravity.CENTER
         ball.setTextColor(Color.WHITE)
-        ball.background = rounded(0xE62E6F5E.toInt(), 36f)
+        ball.setShadowLayer(6f, 0f, 2f, 0x66000000)
+        ball.background = ballBackground()
         ball.setOnClickListener { setCollapsed(false) }
         ball.layoutParams = FrameLayout.LayoutParams(72, 72)
     }
@@ -102,39 +98,44 @@ class OverlayRenderer(
             gravity = Gravity.CENTER_VERTICAL
         }
         val capture = Button(context).apply {
-            text = "\u622a\u56fe\u7b54\u9898"
+            text = "截图答题"
             setOnClickListener { onCapture() }
         }
+        autoCapture.text = "连续截图"
+        autoCapture.setTextColor(0xFF0F766E.toInt())
+        autoCapture.setOnClickListener { onAutoCaptureToggle() }
+        row.addView(capture)
+        row.addView(autoCapture)
+
+        val actionRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
         val collapse = Button(context).apply {
-            text = "\u6536\u8d77"
+            text = "收起"
             setOnClickListener { setCollapsed(true) }
         }
-        copy.text = "\u590d\u5236"
+        copy.text = "复制"
         copy.setOnClickListener {
             val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             manager.setPrimaryClip(ClipData.newPlainText("quiz-answer", copyText))
         }
-        row.addView(capture)
-        row.addView(copy)
-        row.addView(collapse)
+        actionRow.addView(copy)
+        actionRow.addView(collapse)
 
         setupText(status, 13f, 0xFFD7DEE8.toInt(), bold = false)
         setupText(flashTitle, 13f, 0xFF8FE3CF.toInt(), bold = true)
         setupText(flash, 20f, 0xFFFFFFFF.toInt(), bold = false)
-        setupText(deepTitle, 13f, 0xFFFFD166.toInt(), bold = true)
-        setupText(deep, 15f, 0xFFF4F7FB.toInt(), bold = false)
 
         val scroll = ScrollView(context)
         val content = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             addView(row)
+            addView(actionRow)
             addView(status)
             addDivider(context)
             addView(flashTitle)
             addView(flash)
-            addDivider(context)
-            addView(deepTitle)
-            addView(deep)
         }
         scroll.addView(content)
         panel.addView(scroll)
@@ -168,5 +169,18 @@ class OverlayRenderer(
             shape = GradientDrawable.RECTANGLE
             cornerRadius = radius
             setColor(color)
+        }
+
+    private fun ballBackground(): GradientDrawable =
+        GradientDrawable(
+            GradientDrawable.Orientation.TL_BR,
+            intArrayOf(
+                0xFF4F46E5.toInt(),
+                0xFF7C3AED.toInt(),
+                0xFF0EA5E9.toInt(),
+            ),
+        ).apply {
+            shape = GradientDrawable.OVAL
+            setStroke(2, 0x40FFFFFF)
         }
 }

@@ -1,0 +1,894 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="robots" content="noindex, nofollow" />
+<title>答题助手 · 远程配置后台</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --line:#e8ebf0; --line-soft:#f0f2f6;
+    --ink:#0f1419; --ink-2:#3d4653; --muted:#6b7280; --faint:#9aa3af;
+    --brand:#0f766e; --brand-soft:#d7f2ec; --brand-ink:#0b5d56;
+    --indigo:#4f46e5; --danger:#b91c1c; --danger-soft:#fef2f2;
+    --r:16px; --r-sm:11px;
+    --shadow:0 1px 2px rgba(16,24,40,.04), 0 8px 24px rgba(16,24,40,.04);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    font:14.5px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    background:var(--bg); color:var(--ink); padding-bottom:84px;
+    -webkit-font-smoothing:antialiased;
+  }
+  header{
+    position:sticky; top:0; z-index:30;
+    background:#0f1419; color:#fff;
+    padding:18px 20px 16px;
+    border-bottom:1px solid #1c2431;
+  }
+  header .inner{max-width:980px;margin:0 auto}
+  header h1{margin:0;font-size:17px;font-weight:650;letter-spacing:.2px;display:flex;align-items:center;gap:9px}
+  header h1::before{content:"";width:7px;height:7px;border-radius:50%;background:#34d399;flex:0 0 auto}
+  header .sub{font-size:12px;color:#8b98a9;margin-top:5px;line-height:1.5}
+  header .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:13px}
+  .pill{
+    font-size:11.5px;padding:4px 11px;border-radius:999px;
+    background:#1b2432;border:1px solid #26303f;color:#9fb0c4;font-weight:500;
+  }
+  .pill.ok{background:rgba(16,185,129,.14);border-color:rgba(16,185,129,.35);color:#6ee7b7}
+  .pill.err{background:rgba(239,68,68,.14);border-color:rgba(239,68,68,.3);color:#fca5a5}
+  main{max-width:980px;margin:0 auto;padding:18px 20px}
+  nav.tabs{
+    display:flex;gap:3px;overflow-x:auto;padding:4px;
+    background:var(--card);border:1px solid var(--line);border-radius:14px;
+    margin-bottom:16px;box-shadow:var(--shadow);
+  }
+  nav.tabs::-webkit-scrollbar{display:none}
+  nav.tabs button{
+    flex:0 0 auto;border:0;background:transparent;color:var(--muted);
+    padding:8px 15px;border-radius:10px;font:inherit;font-size:13.5px;cursor:pointer;
+    white-space:nowrap;transition:background .15s,color .15s;
+  }
+  nav.tabs button:hover{color:var(--ink);background:var(--line-soft)}
+  nav.tabs button.active{background:var(--ink);color:#fff;font-weight:600}
+
+  section.card{
+    background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+    padding:18px 20px;margin-bottom:14px;box-shadow:var(--shadow);
+  }
+  section.card h2{margin:0 0 4px;font-size:15px;font-weight:650;letter-spacing:.1px}
+  section.card .hint{color:var(--faint);font-size:12px;margin:0 0 16px;line-height:1.6}
+
+  .field{margin-bottom:13px}
+  .field label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px;font-weight:500}
+  input[type=text],input[type=number],input[type=password],textarea,select{
+    width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:var(--r-sm);
+    font:inherit;font-size:13.5px;background:var(--bg);color:var(--ink);
+    transition:border-color .15s, background .15s, box-shadow .15s;
+  }
+  textarea{min-height:86px;resize:vertical;line-height:1.6}
+  textarea.tall{min-height:210px}
+  input:focus,textarea:focus,select:focus{
+    outline:none;border-color:#9fd8cf;background:#fff;
+    box-shadow:0 0 0 3px rgba(15,118,110,.08);
+  }
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:13px}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+
+  .btn{
+    border:0;border-radius:var(--r-sm);padding:10px 16px;font:inherit;font-size:13.5px;
+    font-weight:600;cursor:pointer;background:var(--line-soft);color:var(--ink-2);
+    transition:transform .08s, background .15s, opacity .15s;
+  }
+  .btn:active{transform:scale(.98)}
+  .btn.primary{background:var(--ink);color:#fff}
+  .btn.primary:hover{background:#1b2431}
+  .btn.ghost{background:#fff;border:1px solid var(--line);color:var(--ink)}
+  .btn.ghost:hover{background:var(--bg)}
+  .btn.danger{background:var(--danger-soft);color:var(--danger)}
+  .btn:disabled{opacity:.4;cursor:not-allowed}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+
+  .ann{border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin-bottom:12px;background:var(--bg)}
+  .ann .ann-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:12px}
+  .ann .ann-head b{font-size:13px;font-weight:650}
+  .switch{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--muted)}
+  .switch input{width:auto;accent-color:var(--brand)}
+
+  .toast{
+    position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(8px);
+    background:var(--ink);color:#fff;padding:11px 20px;border-radius:13px;
+    font-size:13.5px;opacity:0;pointer-events:none;transition:.22s;z-index:60;max-width:90vw;
+    box-shadow:0 12px 32px rgba(16,24,40,.24);
+  }
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  .toast.ok{background:#065f46}
+  .toast.err{background:#7f1d1d}
+
+  footer.bar{
+    position:fixed;left:0;right:0;bottom:0;z-index:30;
+    background:rgba(255,255,255,.94);border-top:1px solid var(--line);
+    padding:12px 20px;
+    backdrop-filter:blur(10px);
+  }
+  footer.bar .inner{max-width:980px;margin:0 auto;width:100%;display:flex;gap:12px;align-items:center;justify-content:space-between}
+  footer.bar .meta{font-size:11.5px;color:var(--faint);line-height:1.4}
+  code.k{background:var(--brand-soft);color:var(--brand-ink);padding:1.5px 6px;border-radius:5px;font-size:12px;font-weight:500}
+  .jsonview{
+    font:12.5px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre;
+    overflow:auto;max-height:440px;background:#0f1419;color:#c9d4e3;padding:16px;border-radius:13px;
+  }
+  .hidden{display:none !important}
+
+  .stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(136px,1fr));gap:11px;margin-bottom:6px}
+  .stat{border:1px solid var(--line);border-radius:14px;padding:14px 15px;background:var(--bg)}
+  .stat .n{font-size:23px;font-weight:700;color:var(--ink);line-height:1.15;letter-spacing:-.3px}
+  .stat .l{font-size:11.5px;color:var(--faint);margin-top:3px}
+  .bars{display:flex;align-items:flex-end;gap:5px;height:136px;padding:8px 0 22px;border-bottom:1px solid var(--line)}
+  .bars .b{flex:1;background:linear-gradient(180deg,#5eead4,#0f766e);border-radius:5px 5px 0 0;min-height:2px;position:relative;transition:opacity .15s}
+  .bars .b:hover{opacity:.82}
+  .bars .b span{position:absolute;bottom:-19px;left:50%;transform:translateX(-50%);font-size:9px;color:var(--faint);white-space:nowrap}
+  .stats-h{font-size:13px;font-weight:650;margin:22px 0 10px;color:var(--ink-2)}
+  .vrow{display:flex;align-items:center;gap:10px;margin-bottom:7px;font-size:12.5px}
+  .vrow .vname{flex:0 0 96px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .vrow .vbar{height:7px;border-radius:4px;background:linear-gradient(90deg,#a5b4fc,#4f46e5)}
+  .vrow .vnum{color:var(--faint);font-size:11.5px}
+  .tablewrap{max-height:320px;overflow:auto;border:1px solid var(--line);border-radius:12px}
+  .tablewrap table{width:100%;border-collapse:collapse;font-size:12.5px}
+  .tablewrap th,.tablewrap td{text-align:left;padding:8px 11px;border-bottom:1px solid var(--line-soft);white-space:nowrap}
+  .tablewrap th{color:var(--muted);font-weight:600;background:var(--bg);position:sticky;top:0;font-size:11.5px}
+
+  .drop{
+    border:1.5px dashed #cfd6e1;border-radius:15px;padding:30px 20px;text-align:center;
+    background:var(--bg);cursor:pointer;transition:.18s;
+  }
+  .drop:hover{background:#f1f4f8;border-color:var(--brand)}
+  .drop b{display:block;font-size:14px;margin-bottom:5px;font-weight:650}
+  .drop span{font-size:12px;color:var(--faint)}
+  .bar-wrap{height:8px;border-radius:5px;background:var(--line-soft);overflow:hidden;margin-top:14px}
+  .bar-wrap i{display:block;height:100%;width:0;background:linear-gradient(90deg,#34d399,#0f766e);transition:width .18s}
+  .kv{display:grid;grid-template-columns:96px 1fr;gap:8px 12px;font-size:12.5px;margin-top:14px}
+  .kv .k{color:var(--faint)}
+  .kv .v{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;word-break:break-all;color:var(--ink-2)}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="inner">
+  <h1>答题助手 · 远程配置后台</h1>
+  <div class="sub">改完点保存，客户端下次启动生效（ETag 自动刷新）</div>
+  <div class="row">
+    <span class="pill" id="statusPill">未连接</span>
+    <span class="pill" id="verPill">configVersion —</span>
+  </div>
+  </div>
+</header>
+
+<main>
+  <nav class="tabs" id="tabs">
+    <button data-tab="basic" class="active">基础文案</button>
+    <button data-tab="ann">公告</button>
+    <button data-tab="update">版本更新</button>
+    <button data-tab="features">功能开关</button>
+    <button data-tab="prompt">提示词</button>
+    <button data-tab="release">发版</button>
+    <button data-tab="stats">统计</button>
+    <button data-tab="raw">原始 JSON</button>
+  </nav>
+
+  <!-- 登录 -->
+  <section class="card" id="loginCard">
+    <h2>先填管理 Token</h2>
+    <p class="hint">服务器 <code class="k">ADMIN_TOKEN</code> 环境变量里的那串。只存在本机浏览器，不上传别处。</p>
+    <div class="field">
+      <label>ADMIN_TOKEN</label>
+      <input type="password" id="tokenInput" placeholder="粘贴 token" autocomplete="current-password" />
+    </div>
+    <div class="row">
+      <button class="btn primary" id="loginBtn">连接</button>
+      <span class="hint" style="margin:0" id="loginHint"></span>
+    </div>
+  </section>
+
+  <div id="editor" class="hidden">
+
+    <!-- 基础 -->
+    <section class="card" data-panel="basic">
+      <h2>界面文案</h2>
+      <p class="hint">改完不用发版，重启 App 就换。</p>
+      <div class="field"><label>appTitle（首页主标题）</label><input type="text" id="appTitle" /></div>
+      <div class="field"><label>subtitle（副标题）</label><input type="text" id="subtitle" /></div>
+      <div class="field"><label>securityNotice（底部安全提示）</label><textarea id="securityNotice"></textarea></div>
+      <div class="field"><label>setupGuide（配置引导）</label><textarea id="setupGuide"></textarea></div>
+      <div class="grid2">
+        <div class="field"><label>sponsorTitle</label><input type="text" id="sponsorTitle" /></div>
+        <div class="field"><label>sponsorHint</label><input type="text" id="sponsorHint" /></div>
+      </div>
+      <div class="field"><label>sponsorText</label><textarea id="sponsorText"></textarea></div>
+    </section>
+
+    <!-- 公告 -->
+    <section class="card hidden" data-panel="ann">
+      <h2>公告</h2>
+      <p class="hint">数组顺序即弹窗顺序。force 层级只有「我知道了」，返回键关不掉。</p>
+      <div id="annList"></div>
+      <button class="btn" id="addAnnBtn">+ 新增公告</button>
+    </section>
+
+    <!-- 更新 -->
+    <section class="card hidden" data-panel="update">
+      <h2>版本更新</h2>
+      <p class="hint">latestVersionCode 大于手机上的版本才会弹。minSupportedVersionCode 高于手机版本则强制更新，没有取消按钮。</p>
+      <div class="grid2">
+        <div class="field"><label>latestVersionCode（整数）</label><input type="number" id="latestVersionCode" /></div>
+        <div class="field"><label>latestVersionName</label><input type="text" id="latestVersionName" /></div>
+      </div>
+      <div class="field"><label>downloadUrl（主下载链接：网盘分享页）</label><input type="text" id="downloadUrl" placeholder="https://share.feijipan.com/s/xxxx 提取码 xxxx" /></div>
+      <div class="field"><label>downloadUrlAlt（备用直链，可留空）</label><input type="text" id="downloadUrlAlt" placeholder="https://xuhuohua.xyz/quizassist/quizassist-2.5.7.apk" /></div>
+      <div class="field"><label>updateContent（更新说明）</label><textarea id="updateContent"></textarea></div>
+      <div class="grid2">
+        <div class="field"><label>minSupportedVersionCode（0=不强制）</label><input type="number" id="minSupportedVersionCode" /></div>
+        <div class="field"><label>apkSha256（可选）</label><input type="text" id="apkSha256" /></div>
+      </div>
+    </section>
+
+    <!-- 开关 -->
+    <section class="card hidden" data-panel="features">
+      <h2>功能开关</h2>
+      <p class="hint">0 表示「用客户端默认值」。</p>
+      <div class="grid2">
+        <div class="field"><label>maxWaitSeconds</label><input type="number" id="f_maxWaitSeconds" /></div>
+        <div class="field"><label>captureIntervalSeconds</label><input type="number" id="f_captureIntervalSeconds" /></div>
+      </div>
+      <div class="field"><label>promptProfile</label><input type="text" id="f_promptProfile" /></div>
+      <div class="row" style="gap:18px;margin-top:6px">
+        <label class="switch"><input type="checkbox" id="f_enableSearchDefault" /> 默认开启联网</label>
+        <label class="switch"><input type="checkbox" id="f_enableVision" /> 允许图片理解</label>
+        <label class="switch"><input type="checkbox" id="f_disableQuestionBank" /> 禁用本地题库</label>
+        <label class="switch"><input type="checkbox" id="f_enableReport" /> 开启匿名上报</label>
+        <label class="switch"><input type="checkbox" id="f_allowQuestionTelemetry" /> 题目文本上报</label>
+      </div>
+    </section>
+
+    <!-- 提示词 -->
+    <section class="card hidden" data-panel="prompt">
+      <h2>提示词</h2>
+      <p class="hint">留空则用 APK 内置的提示词。非空会完全替换，谨慎操作——建议先在下面留档旧版本。</p>
+      <div class="grid2">
+        <div class="field"><label>version（自己记版本号）</label><input type="number" id="p_version" /></div>
+        <div class="field"><label>maxTokens（96 为默认）</label><input type="number" id="p_maxTokens" /></div>
+      </div>
+      <div class="field"><label>temperature（留空=0.1）</label><input type="text" id="p_temperature" placeholder="0.1" /></div>
+      <div class="field"><label>flashSystem（快速模式）</label><textarea id="p_flashSystem" class="tall"></textarea></div>
+      <div class="field"><label>searchSystem（联网模式）</label><textarea id="p_searchSystem" class="tall"></textarea></div>
+    </section>
+
+    <!-- 发版 -->
+    <section class="card hidden" data-panel="release">
+      <h2>发版：上传 APK</h2>
+      <p class="hint">拖进来就行，服务器边收边算 sha256，完成后自动回填下面的下载地址和哈希。网盘那份仍需你手动传——它没有开放上传接口。</p>
+      <div class="drop" id="dropZone">
+        <b>点击选择，或把 .apk 拖到这里</b>
+        <span>上限 300 MB，文件名只能用字母数字点横线</span>
+      </div>
+      <input type="file" id="apkInput" accept=".apk,application/vnd.android.package-archive" class="hidden" />
+      <div class="bar hidden" id="upBarWrap"><i id="upBar"></i></div>
+      <div class="kv hidden" id="upResult">
+        <div class="k">文件</div><div class="v" id="upName">-</div>
+        <div class="k">大小</div><div class="v" id="upSize">-</div>
+        <div class="k">sha256</div><div class="v" id="upSha">-</div>
+        <div class="k">直链</div><div class="v" id="upUrl">-</div>
+      </div>
+      <p class="hint" style="margin-top:12px">传完记得去「版本更新」把 <code class="k">latestVersionCode</code> 加一、写清楚更新说明，再点保存。</p>
+    </section>
+
+    <!-- 统计 -->
+    <section class="card hidden" data-panel="stats">
+      <h2>使用统计</h2>
+      <p class="hint">数据来自客户端匿名上报。deviceId 是安装时随机生成的串，不含任何个人信息。</p>
+      <div class="stats-grid" id="statCards"></div>
+      <div class="stats-h">近 30 天启动次数</div>
+      <div class="bars" id="statBars"></div>
+      <div class="stats-h">版本分布</div>
+      <div id="statVersions"></div>
+      <div class="stats-h">最近事件</div>
+      <div class="tablewrap"><table id="statRecent"></table></div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn ghost" id="refreshStats">刷新</button>
+        <span class="hint" style="margin:0" id="statsMeta"></span>
+      </div>
+    </section>
+
+    <!-- 原始 -->
+    <section class="card hidden" data-panel="raw">
+      <h2>原始 JSON</h2>
+      <p class="hint">高级用法：直接改整份配置，保存即生效。保存前会校验 JSON。</p>
+      <textarea id="rawJson" class="tall" style="min-height:360px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px"></textarea>
+      <div class="row" style="margin-top:10px">
+        <button class="btn ghost" id="reloadRawBtn">从服务器重新拉取</button>
+        <button class="btn" id="applyRawBtn">用这份 JSON 覆盖编辑器</button>
+      </div>
+      <div class="jsonview hidden" id="diffView" style="margin-top:12px"></div>
+    </section>
+
+  </div>
+</main>
+
+<footer class="bar">
+  <div class="inner">
+  <div class="meta" id="footMeta">本地草稿 · 未保存</div>
+  <div class="row">
+    <button class="btn ghost" id="previewBtn">预览 JSON</button>
+    <button class="btn primary" id="saveBtn" disabled>保存并发布</button>
+  </div>
+  </div>
+</footer>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  var API = '/quiz-api/admin/config';
+  var TOKEN_KEY = 'quizassist_admin_token';
+  var state = { token: '', config: null, dirty: false, etag: '' };
+
+  var $ = function (id) { return document.getElementById(id); };
+  var toastTimer = null;
+
+  function toast(msg, kind) {
+    var el = $('toast');
+    el.textContent = msg;
+    el.className = 'toast show' + (kind ? ' ' + kind : '');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { el.className = 'toast'; }, 2600);
+  }
+
+  function setStatus(text, kind) {
+    var pill = $('statusPill');
+    pill.textContent = text;
+    pill.className = 'pill' + (kind ? ' ' + kind : '');
+  }
+
+  function markDirty() {
+    state.dirty = true;
+    $('footMeta').textContent = '本地草稿 · 未保存';
+  }
+
+  function markSaved(etag) {
+    state.dirty = false;
+    $('footMeta').textContent = '已保存 · ' + new Date().toLocaleTimeString() + (etag ? ' · ETag ' + etag : '');
+    state.etag = etag || '';
+  }
+
+  // ---------- 读取 ----------
+  function loadConfig() {
+    setStatus('连接中…');
+    return fetch(API, {
+      headers: { 'X-Admin-Token': state.token, 'Accept': 'application/json' },
+      cache: 'no-store'
+    }).then(function (res) {
+      if (res.status === 401) throw new Error('token 不对（401）');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return res.text();
+    }).then(function (text) {
+      var cfg;
+      try { cfg = JSON.parse(text.replace(/^\uFEFF/, '')); }
+      catch (e) { throw new Error('服务器上不是合法 JSON：' + e.message); }
+      state.config = cfg;
+      renderAll(cfg);
+      setStatus('已连接', 'ok');
+      $('verPill').textContent = 'configVersion ' + (cfg.configVersion || 0);
+      $('loginCard').classList.add('hidden');
+      $('editor').classList.remove('hidden');
+      $('saveBtn').disabled = false;
+      $('footMeta').textContent = '已加载 · ' + new Date().toLocaleTimeString();
+      state.dirty = false;
+    }).catch(function (e) {
+      setStatus('连接失败', 'err');
+      $('loginHint').textContent = e.message;
+      throw e;
+    });
+  }
+
+  // ---------- 渲染 ----------
+  function renderAll(cfg) {
+    ['appTitle', 'subtitle', 'securityNotice', 'setupGuide', 'sponsorTitle', 'sponsorText', 'sponsorHint']
+      .forEach(function (k) { $(k).value = cfg[k] == null ? '' : cfg[k]; });
+
+    $('latestVersionCode').value = cfg.latestVersionCode || 0;
+    $('latestVersionName').value = cfg.latestVersionName || '';
+    $('downloadUrl').value = cfg.downloadUrl || '';
+    $('downloadUrlAlt').value = cfg.downloadUrlAlt || '';
+    $('updateContent').value = cfg.updateContent || '';
+    $('minSupportedVersionCode').value = cfg.minSupportedVersionCode || 0;
+    $('apkSha256').value = cfg.apkSha256 || '';
+
+    var f = cfg.features || {};
+    $('f_maxWaitSeconds').value = f.maxWaitSeconds || 0;
+    $('f_captureIntervalSeconds').value = f.captureIntervalSeconds || 0;
+    $('f_promptProfile').value = f.promptProfile || '';
+    $('f_enableSearchDefault').checked = f.enableSearchDefault !== false;
+    $('f_enableVision').checked = f.enableVision !== false;
+    $('f_disableQuestionBank').checked = !!f.disableQuestionBank;
+    $('f_enableReport').checked = f.enableReport !== false;
+    $('f_allowQuestionTelemetry').checked = !!f.allowQuestionTelemetry;
+
+    var p = cfg.prompt || {};
+    $('p_version').value = p.version || 0;
+    $('p_maxTokens').value = p.maxTokens || 0;
+    $('p_temperature').value = (p.temperature == null) ? '' : p.temperature;
+    $('p_flashSystem').value = p.flashSystem || '';
+    $('p_searchSystem').value = p.searchSystem || '';
+
+    renderAnnouncements(cfg.announcements || []);
+    $('rawJson').value = JSON.stringify(cfg, null, 2);
+  }
+
+  function renderAnnouncements(list) {
+    var box = $('annList');
+    box.textContent = '';
+    if (!list.length) {
+      var empty = document.createElement('p');
+      empty.className = 'hint';
+      empty.textContent = '还没有公告。点下面新增一条。';
+      box.appendChild(empty);
+      return;
+    }
+    list.forEach(function (a, i) { box.appendChild(buildAnnCard(a, i)); });
+  }
+
+  function buildAnnCard(a, index) {
+    var wrap = document.createElement('div');
+    wrap.className = 'ann';
+
+    var head = document.createElement('div');
+    head.className = 'ann-head';
+    var title = document.createElement('b');
+    title.textContent = '#' + (index + 1) + '  ' + (a.id || '(未命名)');
+    head.appendChild(title);
+
+    var tools = document.createElement('div');
+    tools.className = 'row';
+    var up = document.createElement('button');
+    up.className = 'btn ghost'; up.textContent = '↑';
+    up.onclick = function () { moveAnn(index, -1); };
+    var down = document.createElement('button');
+    down.className = 'btn ghost'; down.textContent = '↓';
+    down.onclick = function () { moveAnn(index, 1); };
+    var del = document.createElement('button');
+    del.className = 'btn danger'; del.textContent = '删除';
+    del.onclick = function () { removeAnn(index); };
+    [up, down, del].forEach(function (b) { tools.appendChild(b); });
+    head.appendChild(tools);
+    wrap.appendChild(head);
+
+    wrap.appendChild(field('id（唯一，改内容就换 id）', a.id || '', function (v) { a.id = v; }, 'text'));
+    wrap.appendChild(field('title', a.title || '', function (v) { a.title = v; }, 'text'));
+    wrap.appendChild(field('content（支持换行）', a.content || '', function (v) { a.content = v; }, 'textarea'));
+
+    var grid = document.createElement('div');
+    grid.className = 'grid2';
+    grid.appendChild(field('level', a.level || 'normal', function (v) { a.level = v; }, 'select', ['normal', 'important', 'force']));
+    grid.appendChild(field('buttonText（留空=确认）', a.buttonText || '', function (v) { a.buttonText = v; }, 'text'));
+    grid.appendChild(field('linkUrl（有值则按钮变详情）', a.linkUrl || '', function (v) { a.linkUrl = v; }, 'text'));
+    grid.appendChild(field('minVersionCode', a.minVersionCode || 0, function (v) { a.minVersionCode = Number(v) || 0; }, 'number'));
+    grid.appendChild(field('maxVersionCode', a.maxVersionCode || 0, function (v) { a.maxVersionCode = Number(v) || 0; }, 'number'));
+    grid.appendChild(field('startAt（Unix 秒，0=不限）', a.startAt || 0, function (v) { a.startAt = Number(v) || 0; }, 'number'));
+    grid.appendChild(field('endAt（Unix 秒，0=不限）', a.endAt || 0, function (v) { a.endAt = Number(v) || 0; }, 'number'));
+    wrap.appendChild(grid);
+
+    var row = document.createElement('div');
+    row.className = 'row';
+    var once = document.createElement('input');
+    once.type = 'checkbox';
+    once.checked = a.once !== false;
+    once.onchange = function () { a.once = once.checked; markDirty(); };
+    var onceLabel = document.createElement('label');
+    onceLabel.className = 'switch';
+    onceLabel.appendChild(once);
+    onceLabel.appendChild(document.createTextNode(' once（点了不再提醒就永久消失）'));
+    row.appendChild(onceLabel);
+    wrap.appendChild(row);
+
+    return wrap;
+  }
+
+  function field(labelText, value, onChange, kind, options) {
+    var d = document.createElement('div');
+    d.className = 'field';
+    var lb = document.createElement('label');
+    lb.textContent = labelText;
+    d.appendChild(lb);
+    var input;
+    if (kind === 'textarea') {
+      input = document.createElement('textarea');
+    } else if (kind === 'select') {
+      input = document.createElement('select');
+      (options || []).forEach(function (o) {
+        var opt = document.createElement('option');
+        opt.value = o; opt.textContent = o;
+        input.appendChild(opt);
+      });
+      input.value = value;
+    } else {
+      input = document.createElement('input');
+      input.type = kind === 'number' ? 'number' : 'text';
+    }
+    if (kind !== 'select') input.value = value;
+    input.oninput = function () { onChange(input.value); markDirty(); };
+    input.onchange = function () { onChange(input.value); markDirty(); };
+    d.appendChild(input);
+    return d;
+  }
+
+  function moveAnn(index, delta) {
+    var list = state.config.announcements || [];
+    var next = index + delta;
+    if (next < 0 || next >= list.length) return;
+    var tmp = list[index]; list[index] = list[next]; list[next] = tmp;
+    renderAnnouncements(list); markDirty();
+  }
+
+  function removeAnn(index) {
+    var list = state.config.announcements || [];
+    if (!confirm('删除公告 #' + (index + 1) + ' ' + (list[index].id || '') + ' ？')) return;
+    list.splice(index, 1);
+    renderAnnouncements(list); markDirty();
+  }
+
+  function addAnn() {
+    var list = state.config.announcements || (state.config.announcements = []);
+    list.push({
+      id: 'a-' + Date.now().toString(36),
+      title: '新公告',
+      content: '在这里写内容',
+      level: 'normal',
+      once: true,
+      buttonText: '',
+      linkUrl: '',
+      minVersionCode: 0,
+      maxVersionCode: 0,
+      startAt: 0,
+      endAt: 0
+    });
+    renderAnnouncements(list); markDirty();
+  }
+
+  // ---------- 收集 ----------
+  function collect() {
+    var cfg = state.config;
+    ['appTitle', 'subtitle', 'securityNotice', 'setupGuide', 'sponsorTitle', 'sponsorText', 'sponsorHint']
+      .forEach(function (k) { cfg[k] = $(k).value; });
+
+    cfg.latestVersionCode = Number($('latestVersionCode').value) || 0;
+    cfg.latestVersionName = $('latestVersionName').value;
+    cfg.downloadUrl = $('downloadUrl').value;
+    cfg.downloadUrlAlt = $('downloadUrlAlt').value;
+    cfg.updateContent = $('updateContent').value;
+    cfg.minSupportedVersionCode = Number($('minSupportedVersionCode').value) || 0;
+    cfg.apkSha256 = $('apkSha256').value;
+
+    cfg.features = cfg.features || {};
+    cfg.features.maxWaitSeconds = Number($('f_maxWaitSeconds').value) || 0;
+    cfg.features.captureIntervalSeconds = Number($('f_captureIntervalSeconds').value) || 0;
+    cfg.features.promptProfile = $('f_promptProfile').value;
+    cfg.features.enableSearchDefault = $('f_enableSearchDefault').checked;
+    cfg.features.enableVision = $('f_enableVision').checked;
+    cfg.features.disableQuestionBank = $('f_disableQuestionBank').checked;
+    cfg.features.enableReport = $('f_enableReport').checked;
+    cfg.features.allowQuestionTelemetry = $('f_allowQuestionTelemetry').checked;
+
+    cfg.prompt = cfg.prompt || {};
+    cfg.prompt.version = Number($('p_version').value) || 0;
+    cfg.prompt.maxTokens = Number($('p_maxTokens').value) || 0;
+    var t = $('p_temperature').value.trim();
+    cfg.prompt.temperature = t === '' ? null : Number(t);
+    cfg.prompt.flashSystem = $('p_flashSystem').value;
+    cfg.prompt.searchSystem = $('p_searchSystem').value;
+
+    cfg.configVersion = (Number(cfg.configVersion) || 0) + 0; // 保存时再 +1
+    return cfg;
+  }
+
+  // ---------- 保存 ----------
+  function save() {
+    var cfg = collect();
+    cfg.configVersion = (Number(cfg.configVersion) || 0) + 1;
+    var body = JSON.stringify(cfg);
+    $('saveBtn').disabled = true;
+    fetch(API, {
+      method: 'POST',
+      headers: {
+        'X-Admin-Token': state.token,
+        'Content-Type': 'application/json; charset=utf-8'
+      },
+      body: body
+    }).then(function (res) {
+      return res.json().catch(function () { return {}; }).then(function (j) {
+        if (!res.ok) throw new Error(j.error || ('HTTP ' + res.status));
+        return j;
+      });
+    }).then(function (j) {
+      state.config = cfg;
+      markSaved(j.etag || '');
+      $('verPill').textContent = 'configVersion ' + cfg.configVersion;
+      toast('已发布 · configVersion ' + cfg.configVersion, 'ok');
+      $('rawJson').value = JSON.stringify(cfg, null, 2);
+    }).catch(function (e) {
+      toast('保存失败：' + e.message, 'err');
+    }).finally(function () {
+      $('saveBtn').disabled = false;
+    });
+  }
+
+  // ---------- 发版上传 ----------
+  function upStatus(text) { $('releaseHint') && ($('releaseHint').textContent = text); }
+
+  function uploadApk(file) {
+    if (!state.token) { toast('先登录', 'err'); return; }
+    if (!/\.apk$/i.test(file.name)) { toast('只能传 .apk', 'err'); return; }
+    if (file.size > 300 * 1024 * 1024) { toast('超过 300 MB', 'err'); return; }
+
+    var wrap = $('upBarWrap'), bar = $('upBar'), box = $('upResult');
+    wrap.classList.remove('hidden');
+    box.classList.add('hidden');
+    bar.style.width = '0%';
+
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', '/quiz-api/admin/upload?filename=' + encodeURIComponent(file.name));
+    xhr.setRequestHeader('X-Admin-Token', state.token);
+
+    xhr.upload.onprogress = function (e) {
+      if (!e.lengthComputable) return;
+      var pct = Math.round(e.loaded / e.total * 100);
+      bar.style.width = pct + '%';
+      bar.parentNode.title = pct + '%';
+    };
+
+    xhr.onload = function () {
+      var data = {};
+      try { data = JSON.parse(xhr.responseText); } catch (e) {}
+      if (xhr.status !== 200 || !data.ok) {
+        toast('上传失败：' + (data.error || ('HTTP ' + xhr.status)), 'err');
+        bar.style.width = '0%';
+        return;
+      }
+      bar.style.width = '100%';
+      $('upName').textContent = data.name;
+      $('upSize').textContent = (data.sizeBytes / 1048576).toFixed(1) + ' MB';
+      $('upSha').textContent = data.sha256;
+      $('upUrl').textContent = data.url;
+      box.classList.remove('hidden');
+      toast('上传完成', 'ok');
+
+      // 自动回填到编辑器（还没保存，需要手动点保存发布）
+      state.config.downloadUrlAlt = data.url;
+      state.config.apkSha256 = data.sha256;
+      if ($('downloadUrlAlt')) $('downloadUrlAlt').value = data.url;
+      if ($('apkSha256')) $('apkSha256').value = data.sha256;
+      var m = /(\d+)\.(\d+)\.(\d+)/.exec(data.name);
+      if (m && $('latestVersionName') && !$('latestVersionName').value) {
+        $('latestVersionName').value = m[0];
+      }
+      markDirty();
+    };
+
+    xhr.onerror = function () { toast('网络错误，上传中断', 'err'); };
+    xhr.send(file);
+  }
+
+  // ---------- 统计 ----------
+  var EVENT_LABEL = {
+    app_launch: '启动',
+    announcement_ack: '公告确认',
+    update_click: '更新点击',
+    smoke_test: '测试'
+  };
+
+  function fmtTime(ts) {
+    if (!ts) return '-';
+    var d = new Date(Number(ts));
+    var p = function (n) { return String(n).padStart(2, '0'); };
+    return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+
+  function statCard(label, value) {
+    var d = document.createElement('div');
+    d.className = 'stat';
+    var n = document.createElement('div');
+    n.className = 'n';
+    n.textContent = value;
+    var l = document.createElement('div');
+    l.className = 'l';
+    l.textContent = label;
+    d.appendChild(n); d.appendChild(l);
+    return d;
+  }
+
+  function loadStats() {
+    var meta = $('statsMeta');
+    if (!state.token) { meta.textContent = '先登录'; return; }
+    meta.textContent = '加载中…';
+    fetch('/quiz-api/admin/stats', {
+      headers: { 'X-Admin-Token': state.token, 'Accept': 'application/json' },
+      cache: 'no-store'
+    }).then(function (res) {
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return res.json();
+    }).then(function (data) {
+      renderStats(data);
+      meta.textContent = '更新于 ' + new Date(data.generatedAt).toLocaleTimeString() +
+        ' · 数据源 ' + data.sourceFiles + ' 个文件' +
+        (data.badLines ? ' · 跳过 ' + data.badLines + ' 行坏数据' : '');
+    }).catch(function (e) {
+      meta.textContent = '加载失败：' + e.message;
+    });
+  }
+
+  function renderStats(d) {
+    var cards = $('statCards');
+    cards.textContent = '';
+    cards.appendChild(statCard('独立设备', d.totals.devices));
+    cards.appendChild(statCard('累计启动', d.totals.launches));
+    cards.appendChild(statCard('今日启动', d.today.launches));
+    cards.appendChild(statCard('今日活跃设备', d.today.devices));
+    cards.appendChild(statCard('事件总数', d.totals.events));
+
+    // 柱状图
+    var bars = $('statBars');
+    bars.textContent = '';
+    var days = (d.days || []).slice(-30);
+    var max = Math.max.apply(null, days.map(function (x) { return x.launches; }).concat([1]));
+    if (!days.length) {
+      var empty = document.createElement('div');
+      empty.className = 'hint';
+      empty.textContent = '还没有数据。App 启动一次就会有一条 app_launch。';
+      bars.appendChild(empty);
+    } else {
+      days.forEach(function (x) {
+        var b = document.createElement('div');
+        b.className = 'b';
+        b.style.height = Math.max(2, Math.round(x.launches / max * 100)) + '%';
+        b.title = x.day + ' · 启动 ' + x.launches + ' 次 · 设备 ' + x.devices;
+        var s = document.createElement('span');
+        s.textContent = x.day.slice(5);
+        b.appendChild(s);
+        bars.appendChild(b);
+      });
+    }
+
+    // 版本分布
+    var verBox = $('statVersions');
+    verBox.textContent = '';
+    var vers = Object.keys(d.byVersion || {}).map(function (k) { return [k, d.byVersion[k]]; })
+      .sort(function (a, b) { return b[1] - a[1]; });
+    if (!vers.length) {
+      var none = document.createElement('p');
+      none.className = 'hint';
+      none.textContent = '暂无版本数据';
+      verBox.appendChild(none);
+    }
+    var vmax = Math.max.apply(null, vers.map(function (x) { return x[1]; }).concat([1]));
+    vers.forEach(function (v) {
+      var row = document.createElement('div');
+      row.className = 'vrow';
+      var name = document.createElement('div');
+      name.className = 'vname';
+      name.textContent = v[0];
+      var bar = document.createElement('div');
+      bar.className = 'vbar';
+      bar.style.width = Math.max(3, Math.round(v[1] / vmax * 100)) + '%';
+      var num = document.createElement('div');
+      num.className = 'vnum';
+      num.textContent = v[1] + ' 次';
+      row.appendChild(name); row.appendChild(bar); row.appendChild(num);
+      verBox.appendChild(row);
+    });
+
+    // 最近事件
+    var table = $('statRecent');
+    table.textContent = '';
+    var thead = document.createElement('thead');
+    var htr = document.createElement('tr');
+    ['时间', '事件', '版本', '设备'].forEach(function (t) {
+      var th = document.createElement('th');
+      th.textContent = t;
+      htr.appendChild(th);
+    });
+    thead.appendChild(htr);
+    table.appendChild(thead);
+    var tbody = document.createElement('tbody');
+    (d.recent || []).forEach(function (r) {
+      var tr = document.createElement('tr');
+      [fmtTime(r.at), EVENT_LABEL[r.event] || r.event, r.version, r.device || '-'].forEach(function (v) {
+        var td = document.createElement('td');
+        td.textContent = v;
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+  }
+
+  // ---------- 事件 ----------
+  $('loginBtn').onclick = function () {
+    state.token = $('tokenInput').value.trim();
+    if (!state.token) { $('loginHint').textContent = '先填 token'; return; }
+    localStorage.setItem(TOKEN_KEY, state.token);
+    loadConfig().catch(function () {});
+  };
+
+  $('saveBtn').onclick = save;
+  $('addAnnBtn').onclick = addAnn;
+
+  var dz = $('dropZone'), fi = $('apkInput');
+  dz.onclick = function () { fi.click(); };
+  fi.onchange = function () { if (fi.files && fi.files[0]) uploadApk(fi.files[0]); fi.value = ''; };
+  ['dragover', 'dragenter'].forEach(function (ev) {
+    dz.addEventListener(ev, function (e) { e.preventDefault(); dz.style.borderColor = '#4f46e5'; });
+  });
+  ['dragleave', 'drop'].forEach(function (ev) {
+    dz.addEventListener(ev, function (e) { e.preventDefault(); dz.style.borderColor = ''; });
+  });
+  dz.addEventListener('drop', function (e) {
+    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]) uploadApk(e.dataTransfer.files[0]);
+  });
+  $('refreshStats').onclick = loadStats;
+
+  Array.prototype.forEach.call(document.querySelectorAll('#tabs button'), function (btn) {
+    btn.onclick = function () {
+      Array.prototype.forEach.call(document.querySelectorAll('#tabs button'), function (b) {
+        b.classList.toggle('active', b === btn);
+      });
+      var name = btn.getAttribute('data-tab');
+      Array.prototype.forEach.call(document.querySelectorAll('[data-panel]'), function (p) {
+        p.classList.toggle('hidden', p.getAttribute('data-panel') !== name);
+      });
+      if (name === 'raw') $('rawJson').value = JSON.stringify(collect(), null, 2);
+      if (name === 'stats') loadStats();
+    };
+  });
+
+  $('applyRawBtn').onclick = function () {
+    try {
+      var parsed = JSON.parse($('rawJson').value);
+      state.config = parsed;
+      renderAll(parsed);
+      markDirty();
+      toast('已载入编辑器，记得保存', 'ok');
+    } catch (e) {
+      toast('JSON 有错：' + e.message, 'err');
+    }
+  };
+
+  $('reloadRawBtn').onclick = function () { loadConfig().catch(function () {}); };
+
+  $('previewBtn').onclick = function () {
+    var view = $('diffView');
+    view.classList.remove('hidden');
+    view.textContent = JSON.stringify(collect(), null, 2);
+  };
+
+  document.querySelectorAll('input,textarea').forEach(function (el) {
+    el.addEventListener('input', markDirty);
+  });
+
+  window.addEventListener('beforeunload', function (e) {
+    if (state.dirty) { e.preventDefault(); e.returnValue = ''; }
+  });
+
+  // 自动登录（token 已存过）
+  var saved = localStorage.getItem(TOKEN_KEY);
+  if (saved) {
+    state.token = saved;
+    $('tokenInput').value = saved;
+    loadConfig().catch(function () {});
+  }
+})();
+</script>
+</body>
+</html>

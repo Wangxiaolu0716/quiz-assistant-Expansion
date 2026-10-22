@@ -16,24 +16,7 @@ object ModelPresets {
             ),
         ),
         ModelPreset(
-            label = "\u81ea\u5b9a\u4e49",
-            provider = ProviderConfig(baseUrl = "", modelName = ""),
-        ),
-    )
-
-    val deep: List<ModelPreset> = listOf(
-        ModelPreset(
-            label = "gpt5.6luna",
-            provider = ProviderConfig(
-                baseUrl = "https://your-api-proxy.com/v1/",
-                modelName = "gpt5.6luna",
-                temperature = 0.1,
-                enableSearchHint = true,
-                reasoningEffort = "max",
-            ),
-        ),
-        ModelPreset(
-            label = "\u81ea\u5b9a\u4e49",
+            label = "自定义",
             provider = ProviderConfig(baseUrl = "", modelName = ""),
         ),
     )

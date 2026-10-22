@@ -11,37 +11,60 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -49,14 +72,22 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import com.quizassist.cache.AnswerCache
 import com.quizassist.cache.HistoryItem
+import com.quizassist.model.AnswerMode
 import com.quizassist.model.AppSettings
 import com.quizassist.model.ModelPreset
 import com.quizassist.model.ModelPresets
@@ -64,8 +95,11 @@ import com.quizassist.model.ProviderConfig
 import com.quizassist.model.RoiBox
 import com.quizassist.overlay.OverlayController
 import com.quizassist.overlay.ProjectionPermissionStore
+import com.quizassist.prompt.PromptFactory
+import com.quizassist.prompt.RemoteRuntime
 import com.quizassist.questionbank.QuestionBankStore
 import com.quizassist.settings.SettingsStore
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -73,6 +107,12 @@ import kotlinx.coroutines.withContext
 class MainActivity : ComponentActivity() {
     private lateinit var settingsStore: SettingsStore
     private var importMessage by mutableStateOf("")
+    private var showSponsor by mutableStateOf(false)
+    private var remoteConfig by mutableStateOf(RemoteConfig())
+
+    /** 待展示公告队列，一次只弹一条，确认后出队。 */
+    private var announcementQueue by mutableStateOf(emptyList<Announcement>())
+    private var updateVisible by mutableStateOf(false)
 
     private val importQuestionBank = registerForActivityResult(
         ActivityResultContracts.OpenDocument(),
@@ -83,13 +123,13 @@ class MainActivity : ComponentActivity() {
                 .onSuccess { result ->
                     settingsStore.update { it.copy(questionBankMode = true) }
                     withContext(Dispatchers.Main) {
-                        importMessage = "\u5df2\u5bfc\u5165 ${result.count} \u9053\u9898\u76ee\uff1a${result.name}"
+                        importMessage = "已识别 ${result.format}（${result.columns}），导入 ${result.count} 道：${result.name}"
                         toast(importMessage)
                     }
                 }
                 .onFailure {
                     withContext(Dispatchers.Main) {
-                        importMessage = "\u5bfc\u5165\u5931\u8d25\uff1a${it.message.orEmpty()}"
+                        importMessage = "导入失败：${it.message.orEmpty()}"
                         toast(importMessage)
                     }
                 }
@@ -99,14 +139,38 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         settingsStore = SettingsStore(this)
+        // 答题风格要在第一次请求之前就位，否则会用上一轮的默认值。
+        PromptFactory.setAnswerMode(settingsStore.currentSettings.answerMode)
+
+        if (runCatching { QuestionBankStore(this).importBuiltInIfEmpty() }.getOrNull() != null) {
+            settingsStore.saveSync(settingsStore.currentSettings.copy(questionBankMode = true))
+        }
+        lifecycleScope.launch {
+            // 先用本地缓存把界面渲染出来（毫秒级），再后台刷新，公告不会卡启动。
+            applyConfig(RemoteConfigLoader.cached(this@MainActivity))
+
+            val snapshot = RemoteConfigLoader.refresh(this@MainActivity)
+            applyConfig(snapshot.config)
+
+            if (RemoteRuntime.enableReport()) {
+                RemoteConfigLoader.reportAsync(
+                    this@MainActivity,
+                    "app_launch",
+                    mapOf("source" to snapshot.source, "fromCache" to snapshot.fromCache.toString()),
+                )
+            }
+        }
         setContent {
-            MaterialTheme {
+            MaterialTheme(colorScheme = AppColors) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
-                    color = Color(0xFFF5F7FB),
+                    color = MaterialTheme.colorScheme.background,
                 ) {
-                    SettingsScreen(
+                    AppRoot(
+                        showSponsor = showSponsor,
+                        onSponsorChange = { showSponsor = it },
                         store = settingsStore,
+                        config = remoteConfig,
                         importMessage = importMessage,
                         onImportQuestionBank = {
                             importQuestionBank.launch(arrayOf("application/json", "text/csv", "text/plain", "*/*"))
@@ -115,6 +179,38 @@ class MainActivity : ComponentActivity() {
                         onStartProjection = { requestProjection() },
                         onStartOverlay = { showOverlay() },
                     )
+
+                    announcementQueue.firstOrNull()?.let { announcement ->
+                        AnnouncementDialog(
+                            announcement = announcement,
+                            onConfirm = { confirmAnnouncement(announcement) },
+                            onNeverRemind = { neverRemindAnnouncement(announcement) },
+                            onOpenLink = { openLink(it) },
+                        )
+                    }
+                    // 公告优先，公告处理完再弹更新，避免两个对话框叠在一起。
+                    if (updateVisible && announcementQueue.isEmpty()) {
+                        val required = remoteConfig.isUpdateRequired()
+                        UpdateDialog(
+                            title = if (remoteConfig.latestVersionName.isNotBlank()) {
+                                "发现新版本 ${remoteConfig.latestVersionName}"
+                            } else {
+                                "发现新版本"
+                            },
+                            content = remoteConfig.updateContent.ifBlank {
+                                if (required) {
+                                    "当前版本已停止支持，请更新后继续使用。"
+                                } else {
+                                    "检测到新版本，点击「去下载」查看。"
+                                }
+                            },
+                            onUpdate = { openUpdate(remoteConfig.downloadUrl) },
+                            onCancel = { dismissUpdate() },
+                            required = required,
+                            altUrl = remoteConfig.downloadUrlAlt,
+                            onOpenAlt = { openUpdate(remoteConfig.downloadUrlAlt) },
+                        )
+                    }
                 }
             }
         }
@@ -164,26 +260,249 @@ class MainActivity : ComponentActivity() {
         }.onFailure { toast("${Zh.overlayStartFailed}: ${it.message.orEmpty()}") }
     }
 
+    /** 应用一份远程配置：同步文案、远程提示词参数、公告队列与更新状态。 */
+    private fun applyConfig(config: RemoteConfig) {
+        remoteConfig = config
+        RemoteRuntime.apply(config)
+        announcementQueue = pendingAnnouncements(config)
+        updateVisible = shouldShowUpdate(config)
+    }
+
+    /** 过滤出当前该弹的公告：版本区间、生效时间窗、是否已「不再提醒」。 */
+    private fun pendingAnnouncements(config: RemoteConfig): List<Announcement> {
+        val seen = seenAnnouncementIds()
+        return config.allAnnouncements().filter { announcement ->
+            announcement.isActive() &&
+                announcement.matchesVersion(BuildConfig.VERSION_CODE) &&
+                !(announcement.once && seen.contains(announcement.id))
+        }
+    }
+
+    private fun seenAnnouncementIds(): Set<String> =
+        getSharedPreferences("announcement", MODE_PRIVATE)
+            .getStringSet("seen_ids", emptySet())
+            .orEmpty()
+            .toSet()
+
+    /** 「确认」：本次关闭；只有 once=false 的公告重启后还会再弹。 */
+    private fun confirmAnnouncement(announcement: Announcement) {
+        announcementQueue = announcementQueue.drop(1)
+        if (RemoteRuntime.enableReport()) {
+            RemoteConfigLoader.reportAsync(this, "announcement_ack", mapOf("id" to announcement.id))
+        }
+    }
+
+    /** 「不再提醒」：记住这条公告 ID，等服务器发新 ID 才会再出现。 */
+    private fun neverRemindAnnouncement(announcement: Announcement) {
+        if (announcement.once && announcement.id.isNotBlank()) {
+            getSharedPreferences("announcement", MODE_PRIVATE)
+                .edit()
+                .putStringSet("seen_ids", seenAnnouncementIds() + announcement.id)
+                .putString("last_seen_id", announcement.id)
+                .apply()
+        }
+        announcementQueue = announcementQueue.drop(1)
+    }
+
+    private fun shouldShowUpdate(config: RemoteConfig): Boolean {
+        if (config.downloadUrl.isBlank()) return false
+        if (config.latestVersionCode <= BuildConfig.VERSION_CODE) return false
+        // 低于最低支持版本：强制更新，不给「取消」也不记忽略。
+        if (config.isUpdateRequired()) return true
+        val ignored = getSharedPreferences("update", MODE_PRIVATE).getInt("ignored_version_code", -1)
+        return config.latestVersionCode != ignored
+    }
+
+    /** 「取消」：记住当前版本号，直到发布新版本才再次弹出更新。 */
+    private fun dismissUpdate() {
+        getSharedPreferences("update", MODE_PRIVATE)
+            .edit().putInt("ignored_version_code", remoteConfig.latestVersionCode).apply()
+        updateVisible = false
+    }
+
+    private fun openLink(url: String) {
+        if (url.isBlank()) return
+        runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+            .onFailure { toast("打开链接失败：${it.message.orEmpty()}") }
+    }
+
+    private fun openUpdate(url: String) {
+        if (url.isBlank()) {
+            toast("这个下载源还没配好")
+            return
+        }
+        updateVisible = false
+        if (RemoteRuntime.enableReport()) {
+            RemoteConfigLoader.reportAsync(this, "update_click", mapOf("target" to remoteConfig.latestVersionCode.toString()))
+        }
+        runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+            .onFailure { toast("打开下载链接失败：${it.message.orEmpty()}") }
+    }
+
     private fun toast(message: String) =
         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
 }
 
+// ---------------------------------------------------------------- 配色
+
+private val AppColors = lightColorScheme(
+    primary = Color(0xFF0F766E),
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFFD7F2EC),
+    onPrimaryContainer = Color(0xFF07332E),
+    secondary = Color(0xFF4F46E5),
+    onSecondary = Color.White,
+    background = Color(0xFFF6F7F9),
+    surface = Color.White,
+    onSurface = Color(0xFF0F1419),
+    surfaceVariant = Color(0xFFF1F3F7),
+    onSurfaceVariant = Color(0xFF5A6472),
+    outline = Color(0xFFE3E7EE),
+    outlineVariant = Color(0xFFEDF0F5),
+)
+
+private object Ink {
+    val primary = Color(0xFF0F1419)
+    val muted = Color(0xFF6B7280)
+    val faint = Color(0xFF9AA3AF)
+    val line = Color(0xFFECEEF3)
+    val card = Color.White
+    val tint = Color(0xFFF4F6FA)
+    val accent = Color(0xFF0F766E)
+    val accentSoft = Color(0xFFD7F2EC)
+    val indigo = Color(0xFF4F46E5)
+    val headerTop = Color(0xFF0D1626)
+    val headerBottom = Color(0xFF152238)
+}
+
+// ---------------------------------------------------------------- 根容器：转场 + 左滑返回
+
+/**
+ * 两个页面之间的切换容器。
+ *
+ * 进入时从右侧滑入、淡入；返回时向右滑出。赞助页额外支持「从左缘往右划」退出，
+ * 拖动过程中页面跟手位移，松手超过 40% 宽度或速度够快就返回，否则回弹。
+ */
 @Composable
-private fun SettingsScreen(
+private fun AppRoot(
+    showSponsor: Boolean,
+    onSponsorChange: (Boolean) -> Unit,
     store: SettingsStore,
+    config: RemoteConfig,
     importMessage: String,
     onImportQuestionBank: () -> Unit,
     onRequestOverlayPermission: () -> Unit,
     onStartProjection: () -> Unit,
     onStartOverlay: () -> Unit,
 ) {
+    AnimatedContent(
+        targetState = showSponsor,
+        transitionSpec = {
+            if (targetState) {
+                (slideInHorizontally(tween(280)) { it / 3 } + fadeIn(tween(220))) togetherWith
+                    fadeOut(tween(160))
+            } else {
+                fadeIn(tween(200)) togetherWith
+                    (slideOutHorizontally(tween(280)) { it / 3 } + fadeOut(tween(220)))
+            }
+        },
+        label = "page",
+    ) { sponsor ->
+        if (sponsor) {
+            SwipeBackBox(onBack = { onSponsorChange(false) }) {
+                SponsorScreen(config = config, onBack = { onSponsorChange(false) })
+            }
+        } else {
+            SettingsScreen(
+                store = store,
+                config = config,
+                importMessage = importMessage,
+                onImportQuestionBank = onImportQuestionBank,
+                onRequestOverlayPermission = onRequestOverlayPermission,
+                onStartProjection = onStartProjection,
+                onStartOverlay = onStartOverlay,
+                onSponsor = { onSponsorChange(true) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun SwipeBackBox(enabled: Boolean = true, onBack: () -> Unit, content: @Composable () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val offsetX = remember { Animatable(0f) }
+    var widthPx by remember { mutableStateOf(1f) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
+                widthPx = size.width.toFloat().coerceAtLeast(1f)
+                detectHorizontalDragGestures(
+                    onDragEnd = {
+                        val passed = offsetX.value > widthPx * 0.38f
+                        scope.launch {
+                            if (passed) {
+                                offsetX.animateTo(widthPx, tween(200))
+                                onBack()
+                                offsetX.snapTo(0f)
+                            } else {
+                                offsetX.animateTo(0f, tween(220))
+                            }
+                        }
+                    },
+                    onDragCancel = {
+                        scope.launch { offsetX.animateTo(0f, tween(200)) }
+                    },
+                    onHorizontalDrag = { _, dragAmount ->
+                        // 只允许往右拖（返回方向），往左拖不动。
+                        val next = (offsetX.value + dragAmount).coerceIn(0f, widthPx)
+                        scope.launch { offsetX.snapTo(next) }
+                    },
+                )
+            }
+            .graphicsLayer {
+                translationX = offsetX.value
+                // 拖得越远，稍微缩小一点，做出「上层页面浮起来」的层次感
+                val progress = (offsetX.value / widthPx).coerceIn(0f, 1f)
+                scaleX = 1f - progress * 0.04f
+                scaleY = 1f - progress * 0.04f
+            },
+    ) {
+        content()
+    }
+}
+
+// ---------------------------------------------------------------- 设置页
+
+private enum class Tab(val label: String) {
+    Model("模型"),
+    Answer("答题"),
+    Launch("启动"),
+}
+
+@Composable
+private fun SettingsScreen(
+    store: SettingsStore,
+    config: RemoteConfig,
+    importMessage: String,
+    onImportQuestionBank: () -> Unit,
+    onRequestOverlayPermission: () -> Unit,
+    onStartProjection: () -> Unit,
+    onStartOverlay: () -> Unit,
+    onSponsor: () -> Unit,
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val settings by store.settings.collectAsState(initial = AppSettings())
-    var draft by remember(settings) { mutableStateOf(settings) }
+    val initialSettings = remember { store.currentSettings }
+    var draft by remember { mutableStateOf(initialSettings) }
+    var maxWaitText by remember { mutableStateOf(initialSettings.maxWaitTimeoutSeconds.toString()) }
+    var intervalText by remember { mutableStateOf(initialSettings.autoCaptureIntervalSeconds.toString()) }
     var saveMessage by remember { mutableStateOf("") }
     var history by remember { mutableStateOf(emptyList<HistoryItem>()) }
     var showHistory by remember { mutableStateOf(false) }
+    var tab by remember { mutableStateOf(Tab.Model) }
     val answerCache = remember(context) { AnswerCache(context) }
     val questionBankStore = remember(context) { QuestionBankStore(context) }
     var bankInfo by remember(importMessage) { mutableStateOf(questionBankStore.info()) }
@@ -193,108 +512,94 @@ private fun SettingsScreen(
         bankInfo = questionBankStore.info()
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        Card(
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF17324D)),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(Zh.appTitle, color = Color.White, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                Text(Zh.subtitle, color = Color(0xFFD7E7F5), style = MaterialTheme.typography.bodyMedium)
-            }
-        }
+    val toSave = draft.copy(
+        maxWaitTimeoutSeconds = maxWaitText.toIntOrNull()?.coerceIn(5, 180) ?: 60,
+        autoCaptureIntervalSeconds = intervalText.toIntOrNull()?.coerceIn(1, 5) ?: 2,
+    )
+    LaunchedEffect(toSave) {
+        if (toSave == store.currentSettings) return@LaunchedEffect
+        delay(600)
+        runCatching { store.save(toSave) }
+            .onSuccess { saveMessage = Zh.saved }
+            .onFailure { saveMessage = "${Zh.saveFailed}: ${it.message.orEmpty()}" }
+    }
+    // 立即生效，不用等防抖保存，用户切完马上答题就是新模式。
+    LaunchedEffect(draft.answerMode) {
+        PromptFactory.setAnswerMode(draft.answerMode)
+    }
 
-        SectionCard(Zh.modelSection, Zh.modelSectionHint) {
-            ProviderEditor(Zh.flashTitle, ModelPresets.flash, draft.flashProvider) {
-                draft = draft.copy(flashProvider = it)
-            }
-            HorizontalDivider()
-            ProviderEditor(Zh.deepTitle, ModelPresets.deep, draft.deepProvider) {
-                draft = draft.copy(deepProvider = it)
-            }
-        }
+    Column(modifier = Modifier.fillMaxSize()) {
+        Header(
+            title = config.appTitle,
+            subtitle = config.subtitle,
+            version = "v${BuildConfig.VERSION_NAME}",
+        )
 
-        SectionCard(Zh.questionBankSection, Zh.questionBankHint) {
-            Text(
-                if (bankInfo.count > 0) "${Zh.importedCount}${bankInfo.count}${Zh.questionCountSuffix}\n${bankInfo.name}"
-                else Zh.noQuestionBank,
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onImportQuestionBank) { Text(Zh.importBank) }
-                OutlinedButton(
-                    onClick = {
-                        questionBankStore.clear()
-                        bankInfo = questionBankStore.info()
-                        draft = draft.copy(questionBankMode = false)
-                    },
-                    enabled = bankInfo.count > 0,
-                ) { Text(Zh.clearBank) }
-            }
-            ToggleRow(Zh.enableBank, draft.questionBankMode) {
-                draft = draft.copy(questionBankMode = it)
-            }
-            if (importMessage.isNotBlank()) Text(importMessage, color = MaterialTheme.colorScheme.primary)
-        }
+        SegmentedTabs(
+            current = tab,
+            onSelect = { tab = it },
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+        )
 
-        SectionCard(Zh.behaviorSection, Zh.behaviorHint) {
-            OutlinedTextField(
-                value = draft.maxWaitTimeoutSeconds.toString(),
-                onValueChange = { value ->
-                    draft = draft.copy(maxWaitTimeoutSeconds = value.toIntOrNull()?.coerceIn(5, 180) ?: 60)
-                },
-                label = { Text(Zh.maxWait) },
-                modifier = Modifier.fillMaxWidth(),
-            )
-            ToggleRow(Zh.visionFallback, draft.useVisionWhenOcrWeak) { draft = draft.copy(useVisionWhenOcrWeak = it) }
-            ToggleRow(Zh.clickThrough, draft.clickThrough) { draft = draft.copy(clickThrough = it) }
-            ToggleRow(Zh.useRoi, draft.roi != null) { enabled ->
-                draft = draft.copy(roi = if (enabled) draft.roi ?: RoiBox(0.08f, 0.22f, 0.84f, 0.38f) else null)
-            }
-            Text("${Zh.overlayAlpha} ${(draft.overlayAlpha * 100).toInt()}%")
-            Slider(
-                value = draft.overlayAlpha,
-                onValueChange = { draft = draft.copy(overlayAlpha = it.coerceIn(0.35f, 1f)) },
-                valueRange = 0.35f..1f,
-            )
-        }
+        Box(modifier = Modifier.weight(1f)) {
+            AnimatedContent(
+                targetState = tab,
+                transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(120)) },
+                label = "tab",
+            ) { current ->
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp)
+                        .padding(bottom = 20.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    when (current) {
+                        Tab.Model -> ModelTab(
+                            draft = draft,
+                            onChange = { draft = it },
+                        )
 
-        SectionCard(Zh.actionsSection, Zh.actionsHint) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onRequestOverlayPermission) { Text(Zh.overlayPermission) }
-                OutlinedButton(onClick = onStartProjection) { Text(Zh.authorizeCapture) }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onStartOverlay) { Text(Zh.startOverlay) }
-                OutlinedButton(
-                    onClick = {
-                        history = history.ifEmpty { emptyList() }
-                        showHistory = true
-                        scope.launch { history = answerCache.recent() }
-                    },
-                ) { Text(Zh.history) }
-            }
-            Button(
-                onClick = {
-                    scope.launch {
-                        runCatching { store.save(draft) }
-                            .onSuccess { saveMessage = Zh.saved }
-                            .onFailure { saveMessage = "${Zh.saveFailed}: ${it.message.orEmpty()}" }
+                        Tab.Answer -> AnswerTab(
+                            draft = draft,
+                            onChange = { draft = it },
+                            bankInfo = bankInfo,
+                            importMessage = importMessage,
+                            maxWaitText = maxWaitText,
+                            intervalText = intervalText,
+                            onMaxWaitChange = { maxWaitText = it },
+                            onIntervalChange = { intervalText = it },
+                            onImportQuestionBank = onImportQuestionBank,
+                            onClearQuestionBank = {
+                                questionBankStore.clear()
+                                bankInfo = questionBankStore.info()
+                                draft = draft.copy(questionBankMode = false)
+                            },
+                        )
+
+                        Tab.Launch -> LaunchTab(
+                            config = config,
+                            hint = saveMessage,
+                            historyCount = history.size,
+                            onRequestOverlayPermission = onRequestOverlayPermission,
+                            onStartProjection = onStartProjection,
+                            onStartOverlay = onStartOverlay,
+                            onShowHistory = {
+                                scope.launch { history = answerCache.recent() }
+                                showHistory = true
+                            },
+                            onSponsor = onSponsor,
+                        )
                     }
-                },
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text(Zh.saveSettings) }
-            if (saveMessage.isNotBlank()) Text(saveMessage, color = MaterialTheme.colorScheme.primary)
+                }
+            }
         }
 
-        Text(Zh.securityNotice, color = Color(0xFF566273), style = MaterialTheme.typography.bodySmall)
-        Text(Zh.setupGuide, color = Color(0xFF566273), style = MaterialTheme.typography.bodySmall)
+        BottomBar(
+            onStartProjection = onStartProjection,
+            onStartOverlay = onStartOverlay,
+        )
     }
 
     if (showHistory) {
@@ -312,86 +617,75 @@ private fun SettingsScreen(
 }
 
 @Composable
-private fun SectionCard(title: String, hint: String, content: @Composable ColumnScope.() -> Unit) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
+private fun Header(title: String, subtitle: String, version: String) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Brush.verticalGradient(listOf(Ink.headerTop, Ink.headerBottom)))
+            .statusBarsPadding()
+            .padding(horizontal = 20.dp, vertical = 22.dp),
     ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            content = {
-                Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                Text(hint, color = Color(0xFF667085), style = MaterialTheme.typography.bodySmall)
-                content()
-            },
-        )
-    }
-}
-
-@Composable
-private fun ProviderEditor(
-    title: String,
-    presets: List<ModelPreset>,
-    provider: ProviderConfig,
-    onChange: (ProviderConfig) -> Unit,
-) {
-    var expanded by remember { mutableStateOf(false) }
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { expanded = true }) { Text(Zh.choosePreset) }
-            Text(provider.modelName.ifBlank { Zh.notConfigured }, style = MaterialTheme.typography.bodyMedium)
-            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                presets.forEach { preset ->
-                    DropdownMenuItem(
-                        text = { Text(preset.label) },
-                        onClick = {
-                            expanded = false
-                            onChange(preset.provider.copy(apiKey = provider.apiKey))
-                        },
-                    )
-                }
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF34D399)),
+                )
+                Spacer(Modifier.width(7.dp))
+                Text(
+                    text = version,
+                    color = Color(0xFF8FA3BC),
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.Medium,
+                )
             }
+            Text(
+                text = title,
+                color = Color.White,
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.2.sp,
+            )
+            Text(
+                text = subtitle,
+                color = Color(0xFF9FB2C8),
+                fontSize = 12.5.sp,
+                lineHeight = 18.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
-        OutlinedTextField(
-            value = provider.baseUrl,
-            onValueChange = { onChange(provider.copy(baseUrl = it)) },
-            label = { Text(Zh.baseUrl) },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-        )
-        OutlinedTextField(
-            value = provider.apiKey,
-            onValueChange = { onChange(provider.copy(apiKey = it)) },
-            label = { Text(Zh.apiKey) },
-            visualTransformation = PasswordVisualTransformation(),
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-        )
-        OutlinedTextField(
-            value = provider.modelName,
-            onValueChange = { onChange(provider.copy(modelName = it)) },
-            label = { Text(Zh.modelName) },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-        )
-        ToggleRow(Zh.searchHint, provider.enableSearchHint) { onChange(provider.copy(enableSearchHint = it)) }
-        ReasoningEditor(provider.reasoningEffort) { onChange(provider.copy(reasoningEffort = it)) }
     }
 }
 
 @Composable
-private fun ReasoningEditor(value: String, onChange: (String) -> Unit) {
-    var expanded by remember { mutableStateOf(false) }
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedButton(onClick = { expanded = true }) { Text(Zh.reasoningEffort) }
-        Text(value.ifBlank { Zh.reasoningOff })
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            listOf("", "low", "medium", "high", "xhigh", "max").forEach { item ->
-                DropdownMenuItem(
-                    text = { Text(item.ifBlank { Zh.reasoningOff }) },
-                    onClick = { expanded = false; onChange(item) },
+private fun SegmentedTabs(current: Tab, onSelect: (Tab) -> Unit, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(Ink.tint)
+            .padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Tab.entries.forEach { item ->
+            val selected = item == current
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(11.dp))
+                    .background(if (selected) Color.White else Color.Transparent)
+                    .clickable { onSelect(item) }
+                    .padding(vertical = 10.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = item.label,
+                    color = if (selected) Ink.primary else Ink.muted,
+                    fontSize = 13.5.sp,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                 )
             }
         }
@@ -399,14 +693,432 @@ private fun ReasoningEditor(value: String, onChange: (String) -> Unit) {
 }
 
 @Composable
-private fun ToggleRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-    Row(
+private fun BottomBar(onStartProjection: () -> Unit, onStartOverlay: () -> Unit) {
+    Surface(color = Color.White, shadowElevation = 12.dp) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OutlinedButton(
+                onClick = onStartProjection,
+                shape = RoundedCornerShape(13.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+            ) { Text(Zh.authorizeCapture, fontSize = 13.5.sp) }
+
+            Button(
+                onClick = onStartOverlay,
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(13.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Ink.primary),
+                contentPadding = PaddingValues(vertical = 13.dp),
+            ) {
+                Text(Zh.startOverlay, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold)
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- 三个 Tab
+
+@Composable
+private fun ModelTab(draft: AppSettings, onChange: (AppSettings) -> Unit) {
+    Card8("回答风格", "悬浮窗空间有限，选你想要的输出长度") {
+        AnswerModePicker(draft.answerMode) { onChange(draft.copy(answerMode = it)) }
+    }
+    Card8("模型接口", "填兼容 OpenAI 的地址；预设也行") {
+        ProviderEditor(
+            presets = ModelPresets.flash,
+            provider = draft.flashProvider,
+            onChange = { onChange(draft.copy(flashProvider = it)) },
+        )
+    }
+}
+
+@Composable
+private fun AnswerTab(
+    draft: AppSettings,
+    onChange: (AppSettings) -> Unit,
+    bankInfo: QuestionBankStore.ImportInfo,
+    importMessage: String,
+    maxWaitText: String,
+    intervalText: String,
+    onMaxWaitChange: (String) -> Unit,
+    onIntervalChange: (String) -> Unit,
+    onImportQuestionBank: () -> Unit,
+    onClearQuestionBank: () -> Unit,
+) {
+    Card8("本地题库", "导入后先查题库，命中就不用请求模型") {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(Ink.tint)
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = when {
+                    bankInfo.count <= 0 -> Zh.noQuestionBank
+                    bankInfo.name == "内置题库" -> "内置题库 · ${bankInfo.count} 道"
+                    else -> "${bankInfo.count} 道 · ${bankInfo.name}"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = Ink.muted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = onImportQuestionBank,
+                shape = RoundedCornerShape(11.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Ink.primary),
+            ) { Text(Zh.importBank, fontSize = 13.sp) }
+            OutlinedButton(
+                onClick = onClearQuestionBank,
+                enabled = bankInfo.count > 0,
+                shape = RoundedCornerShape(11.dp),
+            ) { Text(Zh.clearBank, fontSize = 13.sp) }
+        }
+        SwitchRow(Zh.enableBank, draft.questionBankMode) { onChange(draft.copy(questionBankMode = it)) }
+        ValueSlider(
+            label = "匹配阈值",
+            value = draft.bankMatchThreshold,
+            text = "${(draft.bankMatchThreshold * 100).toInt()}%",
+            range = AppSettings.BANK_MATCH_MIN..AppSettings.BANK_MATCH_MAX,
+            onValueChange = {
+                onChange(draft.copy(bankMatchThreshold = it.coerceIn(AppSettings.BANK_MATCH_MIN, AppSettings.BANK_MATCH_MAX)))
+            },
+        )
+        if (importMessage.isNotBlank()) {
+            Text(importMessage, color = Ink.accent, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+
+    Card8("识别与悬浮窗", "等待时间、截图区域、透明度") {
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            NumberField(Zh.maxWaitShort, maxWaitText, onMaxWaitChange, Modifier.weight(1f))
+            NumberField(Zh.intervalShort, intervalText, onIntervalChange, Modifier.weight(1f))
+        }
+        SwitchRow(Zh.visionFallback, draft.useVisionWhenOcrWeak) { onChange(draft.copy(useVisionWhenOcrWeak = it)) }
+        SwitchRow(Zh.clickThrough, draft.clickThrough) { onChange(draft.copy(clickThrough = it)) }
+        SwitchRow(Zh.useRoi, draft.roi != null) { enabled ->
+            onChange(draft.copy(roi = if (enabled) draft.roi ?: RoiBox(0f, 0.35f, 1f, 0.65f) else null))
+        }
+        ValueSlider(
+            label = Zh.overlayAlpha,
+            value = draft.overlayAlpha,
+            text = "${(draft.overlayAlpha * 100).toInt()}%",
+            range = 0.35f..1f,
+            onValueChange = { onChange(draft.copy(overlayAlpha = it.coerceIn(0.35f, 1f))) },
+        )
+    }
+}
+
+@Composable
+private fun LaunchTab(
+    config: RemoteConfig,
+    hint: String,
+    historyCount: Int,
+    onRequestOverlayPermission: () -> Unit,
+    onStartProjection: () -> Unit,
+    onStartOverlay: () -> Unit,
+    onShowHistory: () -> Unit,
+    onSponsor: () -> Unit,
+) {
+    Card8("权限", "首次使用按顺序点一遍") {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = onRequestOverlayPermission, shape = RoundedCornerShape(11.dp)) {
+                Text(Zh.overlayPermission, fontSize = 13.sp)
+            }
+            OutlinedButton(onClick = onStartProjection, shape = RoundedCornerShape(11.dp)) {
+                Text(Zh.authorizeCapture, fontSize = 13.sp)
+            }
+        }
+        Text(
+            "悬浮窗权限用于显示答案，截图授权用于读取题目。两者都授权后才能启动。",
+            color = Ink.muted,
+            style = MaterialTheme.typography.bodySmall,
+            lineHeight = 18.sp,
+        )
+    }
+
+    Card8("其他", null) {
+        ListRow(
+            title = Zh.history,
+            value = if (historyCount > 0) "$historyCount 条" else Zh.historyEmpty,
+            onClick = onShowHistory,
+        )
+        HorizontalDivider(color = Ink.line)
+        ListRow(title = config.sponsorTitle, value = "", onClick = onSponsor)
+        HorizontalDivider(color = Ink.line)
+        ListRow(
+            title = Zh.startOverlay,
+            value = "",
+            onClick = onStartOverlay,
+        )
+    }
+
+    if (config.setupGuide.isNotBlank()) {
+        Text(
+            config.setupGuide,
+            color = Ink.faint,
+            style = MaterialTheme.typography.bodySmall,
+            lineHeight = 18.sp,
+        )
+    }
+    if (config.securityNotice.isNotBlank()) {
+        Text(
+            config.securityNotice,
+            color = Ink.faint,
+            style = MaterialTheme.typography.bodySmall,
+            lineHeight = 18.sp,
+        )
+    }
+    if (hint.isNotBlank()) {
+        Text(hint, color = Ink.accent, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+// ---------------------------------------------------------------- 通用小组件
+
+@Composable
+private fun Card8(title: String, hint: String?, content: @Composable ColumnScope.() -> Unit) {
+    Card(
         modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = Ink.card),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(
+                    title,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Ink.primary,
+                )
+                if (!hint.isNullOrBlank()) {
+                    Text(hint, fontSize = 11.5.sp, color = Ink.faint, lineHeight = 16.sp)
+                }
+            }
+            content()
+        }
+    }
+}
+
+@Composable
+private fun AnswerModePicker(value: AnswerMode, onChange: (AnswerMode) -> Unit) {
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        AnswerMode.entries.forEach { mode ->
+            val selected = mode == value
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(if (selected) Ink.accentSoft else Ink.tint)
+                    .clickable { onChange(mode) }
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = mode.label,
+                    fontSize = 13.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (selected) Ink.accent else Ink.primary,
+                )
+                Text(
+                    text = if (mode == AnswerMode.ANSWER) "一行，只有答案" else "答案 + 一句依据",
+                    fontSize = 11.sp,
+                    color = if (selected) Color(0xFF3F7A72) else Ink.muted,
+                    lineHeight = 15.sp,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProviderEditor(
+    presets: List<ModelPreset>,
+    provider: ProviderConfig,
+    onChange: (ProviderConfig) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    var reasoningExpanded by remember { mutableStateOf(false) }
+
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = { expanded = true }, shape = RoundedCornerShape(11.dp)) {
+            Text(Zh.choosePreset, fontSize = 13.sp)
+        }
+        Text(
+            provider.modelName.ifBlank { Zh.notConfigured },
+            fontSize = 12.5.sp,
+            color = Ink.muted,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            presets.forEach { preset ->
+                DropdownMenuItem(
+                    text = { Text(preset.label, fontSize = 13.5.sp) },
+                    onClick = {
+                        expanded = false
+                        onChange(preset.provider.copy(apiKey = provider.apiKey))
+                    },
+                )
+            }
+        }
+    }
+
+    SoftField(provider.baseUrl, Zh.baseUrl) { onChange(provider.copy(baseUrl = it)) }
+    SoftField(provider.apiKey, Zh.apiKey, password = true) { onChange(provider.copy(apiKey = it)) }
+    SoftField(provider.modelName, Zh.modelName) { onChange(provider.copy(modelName = it)) }
+
+    SwitchRow(Zh.searchHint, provider.enableSearchHint) { onChange(provider.copy(enableSearchHint = it)) }
+
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = { reasoningExpanded = true }, shape = RoundedCornerShape(11.dp)) {
+            Text(Zh.reasoningEffort, fontSize = 13.sp)
+        }
+        Text(provider.reasoningEffort.ifBlank { Zh.reasoningOff }, fontSize = 12.5.sp, color = Ink.muted)
+        DropdownMenu(expanded = reasoningExpanded, onDismissRequest = { reasoningExpanded = false }) {
+            listOf("", "low", "medium", "high", "xhigh", "max").forEach { item ->
+                DropdownMenuItem(
+                    text = { Text(item.ifBlank { Zh.reasoningOff }, fontSize = 13.5.sp) },
+                    onClick = { reasoningExpanded = false; onChange(provider.copy(reasoningEffort = item)) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SoftField(
+    value: String,
+    label: String,
+    password: Boolean = false,
+    onChange: (String) -> Unit,
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onChange,
+        label = { Text(label, fontSize = 12.sp) },
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+        shape = RoundedCornerShape(12.dp),
+        textStyle = MaterialTheme.typography.bodyMedium,
+        visualTransformation = if (password) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = Ink.accent,
+            unfocusedBorderColor = Ink.line,
+            focusedContainerColor = Color.White,
+            unfocusedContainerColor = Ink.tint,
+        ),
+    )
+}
+
+@Composable
+private fun NumberField(
+    label: String,
+    value: String,
+    onChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onChange,
+        label = { Text(label, fontSize = 12.sp) },
+        modifier = modifier,
+        singleLine = true,
+        shape = RoundedCornerShape(12.dp),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = Ink.accent,
+            unfocusedBorderColor = Ink.line,
+            focusedContainerColor = Color.White,
+            unfocusedContainerColor = Ink.tint,
+        ),
+    )
+}
+
+@Composable
+private fun SwitchRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable { onChange(!checked) },
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        Text(label)
-        Checkbox(checked = checked, onCheckedChange = onChange)
+        Text(label, fontSize = 13.5.sp, color = Ink.primary, modifier = Modifier.weight(1f))
+        Checkbox(
+            checked = checked,
+            onCheckedChange = onChange,
+            colors = CheckboxDefaults.colors(
+                checkedColor = Ink.accent,
+                uncheckedColor = Ink.faint,
+            ),
+        )
+    }
+}
+
+@Composable
+private fun ValueSlider(
+    label: String,
+    value: Float,
+    text: String,
+    range: ClosedFloatingPointRange<Float>,
+    onValueChange: (Float) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(label, fontSize = 13.sp, color = Ink.primary)
+            Text(text, fontSize = 12.5.sp, color = Ink.muted)
+        }
+        Slider(
+            value = value,
+            onValueChange = onValueChange,
+            valueRange = range,
+            colors = SliderDefaults.colors(
+                thumbColor = Ink.accent,
+                activeTrackColor = Ink.accent,
+                inactiveTrackColor = Ink.line,
+            ),
+        )
+    }
+}
+
+@Composable
+private fun ListRow(title: String, value: String, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(title, fontSize = 13.5.sp, color = Ink.primary)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (value.isNotBlank()) {
+                Text(value, fontSize = 12.5.sp, color = Ink.faint)
+            }
+            Spacer(Modifier.width(6.dp))
+            Text("›", fontSize = 17.sp, color = Ink.faint)
+        }
     }
 }
 
@@ -418,82 +1130,81 @@ private fun HistoryDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(Zh.history) },
+        shape = RoundedCornerShape(20.dp),
+        title = { Text(Zh.history, fontSize = 17.sp, fontWeight = FontWeight.SemiBold) },
         text = {
             Column(
                 modifier = Modifier
                     .heightIn(max = 420.dp)
                     .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 if (history.isEmpty()) {
-                    Text(Zh.historyEmpty)
+                    Text(Zh.historyEmpty, color = Ink.muted, fontSize = 13.sp)
                 } else {
                     history.forEach { item ->
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text(item.questionText.take(160), fontWeight = FontWeight.SemiBold)
-                            Text(item.answer.answer.ifBlank { item.answer.raw }.take(240))
-                            HorizontalDivider()
+                            Text(
+                                item.questionText.take(120),
+                                fontSize = 12.5.sp,
+                                color = Ink.muted,
+                                lineHeight = 17.sp,
+                            )
+                            Text(
+                                item.answer.answer.ifBlank { item.answer.raw }.take(120),
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Ink.primary,
+                            )
+                            HorizontalDivider(color = Ink.line)
                         }
                     }
                 }
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text(Zh.close) } },
-        dismissButton = { TextButton(onClick = onClear, enabled = history.isNotEmpty()) { Text(Zh.clearHistory) } },
+        dismissButton = {
+            TextButton(onClick = onClear, enabled = history.isNotEmpty()) { Text(Zh.clearHistory) }
+        },
     )
 }
 
 private object Zh {
-    const val appTitle = "\u5c0f\u591a\u7b54\u9898\u52a9\u624b"
-    const val subtitle = "\u622a\u56fe\u8bc6\u9898\u3001\u5feb\u901f\u56de\u7b54\u3001\u6df1\u5ea6\u6821\u9a8c"
-    const val modelSection = "\u6a21\u578b\u914d\u7f6e"
-    const val modelSectionHint = "\u4f7f\u7528\u9884\u8bbe\u6216\u586b\u5199\u517c\u5bb9\u63a5\u53e3\u5730\u5740"
-    const val flashTitle = "\u5feb\u901f\u56de\u7b54"
-    const val deepTitle = "\u6df1\u5ea6\u56de\u7b54"
-    const val questionBankSection = "\u9898\u5e93"
-    const val questionBankHint = "\u5bfc\u5165\u540e\u4f18\u5148\u4f7f\u7528\u672c\u5730\u5173\u952e\u8bcd\u5339\u914d"
-    const val importedCount = "\u5df2\u5bfc\u5165 "
-    const val questionCountSuffix = " \u9053\u9898"
-    const val noQuestionBank = "\u5c1a\u672a\u5bfc\u5165\u9898\u5e93"
-    const val importBank = "\u5bfc\u5165\u9898\u5e93"
-    const val clearBank = "\u6e05\u9664\u9898\u5e93"
-    const val enableBank = "\u542f\u7528\u672c\u5730\u9898\u5e93"
-    const val behaviorSection = "\u7b54\u9898\u884c\u4e3a"
-    const val behaviorHint = "\u8c03\u6574\u7b49\u5f85\u65f6\u95f4\u3001\u622a\u56fe\u533a\u57df\u4e0e\u60ac\u6d6e\u7a97\u4ea4\u4e92"
-    const val actionsSection = "\u5f00\u59cb\u4f7f\u7528"
-    const val actionsHint = "\u9996\u6b21\u4f7f\u7528\u8bf7\u5148\u6388\u6743\u5c4f\u5e55\u622a\u56fe\u548c\u60ac\u6d6e\u7a97"
-    const val maxWait = "\u6df1\u5ea6\u56de\u7b54\u6700\u5927\u7b49\u5f85\u65f6\u95f4\uff08\u79d2\uff09"
-    const val visionFallback = "\u8bc6\u5b57\u4e0d\u8db3\u65f6\u4f7f\u7528\u56fe\u7247\u7406\u89e3"
-    const val clickThrough = "\u5141\u8bb8\u70b9\u51fb\u7a7f\u8fc7\u60ac\u6d6e\u7a97"
-    const val useRoi = "\u4f7f\u7528\u56fa\u5b9a\u622a\u56fe\u533a\u57df"
-    const val overlayAlpha = "\u60ac\u6d6e\u7a97\u900f\u660e\u5ea6"
-    const val searchHint = "\u5141\u8bb8\u8054\u7f51\u68c0\u7d22"
-    const val reasoningEffort = "\u63a8\u7406\u5f3a\u5ea6"
-    const val reasoningOff = "\u5173\u95ed"
-    const val apiKey = "\u5bc6\u94a5"
-    const val baseUrl = "\u63a5\u53e3\u5730\u5740"
-    const val modelName = "\u6a21\u578b\u540d\u79f0"
-    const val choosePreset = "\u9884\u8bbe"
-    const val notConfigured = "\u672a\u914d\u7f6e"
-    const val history = "\u7b54\u9898\u8bb0\u5f55"
-    const val historyEmpty = "\u6682\u65e0\u8bb0\u5f55"
-    const val clearHistory = "\u6e05\u7a7a\u8bb0\u5f55"
-    const val close = "\u5173\u95ed"
-    const val securityNotice = "\u5e94\u7528\u4e0d\u4f1a\u4e0a\u4f20\u4f60\u7684\u5bc6\u94a5\u3002\u8bf7\u4ec5\u901a\u8fc7\u5b98\u65b9\u53d1\u5e03\u6e20\u9053\u83b7\u53d6\u5b89\u88c5\u5305\uff0c\u975e\u5b98\u65b9\u5b89\u88c5\u5305\u53ef\u80fd\u5bfc\u81f4\u5bc6\u94a5\u6cc4\u9732\u3002"
-    const val setupGuide = "\u914d\u7f6e\uff1a\u9009\u62e9\u9884\u8bbe\u6216\u586b\u5199\u63a5\u53e3\u5730\u5740\u3001\u5bc6\u94a5\u548c\u6a21\u578b\u540d\u79f0\uff0c\u4fdd\u5b58\u540e\u6388\u6743\u622a\u56fe\u5e76\u542f\u52a8\u60ac\u6d6e\u7a97\u3002"
-    const val saved = "\u8bbe\u7f6e\u5df2\u4fdd\u5b58"
-    const val saveFailed = "\u4fdd\u5b58\u5931\u8d25"
-    const val saveSettings = "\u4fdd\u5b58\u8bbe\u7f6e"
-    const val overlayPermission = "\u60ac\u6d6e\u7a97\u6743\u9650"
-    const val authorizeCapture = "\u6388\u6743\u622a\u56fe"
-    const val startOverlay = "\u542f\u52a8\u60ac\u6d6e\u7a97"
-    const val captureAuthorized = "\u622a\u56fe\u4f1a\u8bdd\u5df2\u5c31\u7eea"
-    const val captureDenied = "\u672a\u6388\u6743\u622a\u56fe"
-    const val needOverlayPermission = "\u8bf7\u5148\u5f00\u542f\u60ac\u6d6e\u7a97\u6743\u9650"
-    const val overlayStarting = "\u6b63\u5728\u542f\u52a8\u60ac\u6d6e\u7a97"
-    const val overlayStartFailed = "\u542f\u52a8\u60ac\u6d6e\u7a97\u5931\u8d25"
-    const val openPermissionFailed = "\u6253\u5f00\u6743\u9650\u9875\u5931\u8d25"
-    const val captureLaunchFailed = "\u542f\u52a8\u622a\u56fe\u6388\u6743\u5931\u8d25"
-    const val captureSessionFailed = "\u622a\u56fe\u4f1a\u8bdd\u542f\u52a8\u5931\u8d25"
+    const val modelSection = "模型配置"
+    const val questionBankSection = "题库"
+    const val noQuestionBank = "尚未导入题库"
+    const val importBank = "导入题库"
+    const val clearBank = "清除"
+    const val enableBank = "启用本地题库"
+    const val maxWaitShort = "最大等待（秒）"
+    const val intervalShort = "截图间隔（秒）"
+    const val visionFallback = "识图兜底"
+    const val clickThrough = "点击穿透"
+    const val useRoi = "固定截图区域"
+    const val overlayAlpha = "悬浮窗透明度"
+    const val searchHint = "允许联网检索"
+    const val reasoningEffort = "推理强度"
+    const val reasoningOff = "关闭"
+    const val apiKey = "密钥"
+    const val baseUrl = "接口地址"
+    const val modelName = "模型名称"
+    const val choosePreset = "预设"
+    const val notConfigured = "未配置"
+    const val history = "答题记录"
+    const val historyEmpty = "暂无记录"
+    const val clearHistory = "清空"
+    const val close = "关闭"
+    const val saved = "已保存"
+    const val saveFailed = "保存失败"
+    const val overlayPermission = "悬浮窗权限"
+    const val authorizeCapture = "授权截图"
+    const val startOverlay = "启动悬浮窗"
+    const val captureAuthorized = "截图会话已就绪"
+    const val captureDenied = "未授权截图"
+    const val needOverlayPermission = "请先开启悬浮窗权限"
+    const val overlayStarting = "正在启动悬浮窗"
+    const val overlayStartFailed = "启动悬浮窗失败"
+    const val openPermissionFailed = "打开权限页失败"
+    const val captureLaunchFailed = "启动截图授权失败"
+    const val captureSessionFailed = "截图会话启动失败"
 }

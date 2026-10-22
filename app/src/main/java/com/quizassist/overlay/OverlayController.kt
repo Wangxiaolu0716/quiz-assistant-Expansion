@@ -26,8 +26,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 object OverlayController {
@@ -40,12 +40,14 @@ object OverlayController {
     private var appContext: Context? = null
     private var captureSessionReady: Boolean = false
     private var solveJob: Job? = null
+    private var autoCaptureJob: Job? = null
+    private var solving: Boolean = false
     private var snapshot = SolveSnapshot()
 
     fun show(context: Context): Result<Unit> = runCatching {
         val appContext = context.applicationContext
         if (!Settings.canDrawOverlays(appContext)) {
-            error("\u672a\u6388\u6743\u60ac\u6d6e\u7a97\u6743\u9650")
+            error("未授权悬浮窗权限")
         }
         if (renderer != null) return@runCatching
 
@@ -60,6 +62,7 @@ object OverlayController {
         val overlay = OverlayRenderer(
             context = appContext,
             onCapture = { captureAndSolve() },
+            onAutoCaptureToggle = { toggleAutoCapture() },
             onCollapseChanged = { updateOverlayFlags() },
         )
         val lp = overlayParams()
@@ -74,7 +77,7 @@ object OverlayController {
         wm.addView(overlay.root, lp)
 
         scope.launch {
-            val settings = store.settings.first()
+            val settings = store.fresh()
             overlay.root.alpha = settings.overlayAlpha
             updateOverlayFlags()
         }
@@ -83,6 +86,9 @@ object OverlayController {
     fun hide() {
         solveJob?.cancel()
         solveJob = null
+        autoCaptureJob?.cancel()
+        autoCaptureJob = null
+        solving = false
         val wm = windowManager
         val overlay = renderer
         if (wm != null && overlay != null) {
@@ -102,19 +108,17 @@ object OverlayController {
         val context = appContext ?: return
         val overlay = renderer ?: return
         solveJob?.cancel()
-        snapshot = SolveSnapshot(state = OverlayState.Capturing, notice = "\u6b63\u5728\u542f\u52a8\u622a\u56fe\u670d\u52a1")
+        updateOverlayFlags()
+        snapshot = SolveSnapshot(state = OverlayState.Capturing, notice = "正在启动截图服务")
         overlay.render(snapshot)
         if (ProjectionPermissionStore.data == null) {
-            onCaptureFailed("\u5c4f\u5e55\u622a\u56fe\u672a\u6388\u6743\u6216\u5df2\u5931\u6548\uff0c\u8bf7\u56de\u5230\u4e3b\u754c\u9762\u91cd\u65b0\u6388\u6743")
+            onCaptureFailed("屏幕截图未授权或已失效，请回到主界面重新授权")
             return
         }
         overlay.root.visibility = View.INVISIBLE
+        solving = true
         val hiddenAt = SystemClock.uptimeMillis()
-        val intent = if (captureSessionReady) {
-            CaptureSessionService.captureIntent(context, hiddenAt)
-        } else {
-            CaptureSessionService.captureIntent(context, hiddenAt)
-        }
+        val intent = CaptureSessionService.captureIntent(context, hiddenAt)
         runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
@@ -123,14 +127,14 @@ object OverlayController {
             }
         }.onFailure {
             overlay.root.visibility = View.VISIBLE
-            onCaptureFailed("\u542f\u52a8\u622a\u56fe\u4f1a\u8bdd\u5931\u8d25\uff1a${it.message.orEmpty()}")
+            onCaptureFailed("启动截图会话失败：${it.message.orEmpty()}")
         }
     }
 
     fun ensureCaptureSession(context: Context): Result<Unit> = runCatching {
         val app = context.applicationContext
         if (ProjectionPermissionStore.data == null) {
-            error("\u5c4f\u5e55\u622a\u56fe\u672a\u6388\u6743")
+            error("屏幕截图未授权")
         }
         val intent = CaptureSessionService.startIntent(app)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -143,7 +147,7 @@ object OverlayController {
     fun onCaptureSessionReady() {
         captureSessionReady = true
         val overlay = renderer ?: return
-        snapshot = snapshot.copy(notice = "\u622a\u56fe\u4f1a\u8bdd\u5df2\u5c31\u7eea\uff0c\u4e0b\u6b21\u53ef\u76f4\u63a5\u622a\u56fe")
+        snapshot = snapshot.copy(notice = "截图会话已就绪，下次可直接截图")
         overlay.render(snapshot)
     }
 
@@ -157,23 +161,59 @@ object OverlayController {
         val overlay = renderer ?: return
         overlay.root.visibility = View.VISIBLE
         solveJob?.cancel()
+        solving = true
         solveJob = scope.launch {
-            val settings = store.settings.first()
+            val settings = store.fresh()
             snapshot = snapshot.copy(
                 state = OverlayState.Recognizing,
                 preview = if (settings.showImagePreview) bitmap else null,
-                notice = "\u6b63\u5728 OCR\uff0c\u5e76\u542f\u52a8\u5feb\u901f/\u6df1\u5ea6\u6a21\u578b",
+                notice = "正在 OCR，并启动快速模型",
             )
             overlay.render(snapshot)
             solver.solve(bitmap, settings).collect { event -> handleEvent(event) }
-        }
+        }.also { it.invokeOnCompletion { solving = false } }
     }
 
     fun onCaptureFailed(message: String) {
         val overlay = renderer ?: return
+        solving = false
         overlay.root.visibility = View.VISIBLE
         snapshot = snapshot.copy(state = OverlayState.Error, notice = message)
         overlay.render(snapshot)
+    }
+
+    private fun toggleAutoCapture() {
+        val overlay = renderer ?: return
+        if (autoCaptureJob?.isActive == true) {
+            autoCaptureJob?.cancel()
+            autoCaptureJob = null
+            overlay.setAutoCaptureActive(false)
+            snapshot = snapshot.copy(notice = "连续截图已停止")
+            overlay.render(snapshot)
+        } else {
+            autoCaptureJob = scope.launch { autoCaptureLoop() }
+            overlay.setAutoCaptureActive(true)
+        }
+    }
+
+    private suspend fun autoCaptureLoop() {
+        val store = settingsStore ?: return
+        val overlay = renderer ?: return
+        while (true) {
+            if (ProjectionPermissionStore.data == null) {
+                snapshot = snapshot.copy(notice = "截图未授权，连续截图已停止")
+                overlay.render(snapshot)
+                overlay.setAutoCaptureActive(false)
+                autoCaptureJob = null
+                return
+            }
+            captureAndSolve()
+            while (solving) delay(200)
+            val interval = store.fresh().autoCaptureIntervalSeconds.coerceIn(1, 5)
+            snapshot = snapshot.copy(notice = "连续截图中，${interval} 秒后识别下一题")
+            overlay.render(snapshot)
+            delay(interval * 1000L)
+        }
     }
 
     private fun handleEvent(event: SolveEvent) {
@@ -181,52 +221,29 @@ object OverlayController {
         snapshot = when (event) {
             SolveEvent.Capturing -> snapshot.copy(state = OverlayState.Capturing)
             is SolveEvent.OcrFinished -> snapshot.copy(
-                state = OverlayState.DeepThinking,
+                state = OverlayState.Recognizing,
                 ocrText = event.text,
-                notice = "OCR \u7f6e\u4fe1\u5ea6 ${(event.confidence * 100).toInt()}%\uff0c\u6a21\u5f0f ${event.mode.displayName()}",
+                notice = "OCR 置信度 ${(event.confidence * 100).toInt()}%，模式 ${event.mode.displayName()}",
             )
             is SolveEvent.QuestionBankStatus -> snapshot.copy(
                 notice = when {
-                    !event.enabled -> "\u9898\u5e93\u6a21\u5f0f\u5df2\u5173\u95ed\uff0c\u542f\u52a8 Flash + \u6df1\u5ea6\u6a21\u578b"
-                    event.entryCount <= 0 -> "\u9898\u5e93\u52a0\u8f7d\u5931\u8d25\uff0c\u542f\u52a8 Flash + \u6df1\u5ea6\u6a21\u578b"
-                    event.matched -> "\u9898\u5e93 ${event.entryCount}\u6761\uff0c\u5df2\u547d\u4e2d\uff0c\u4e0d\u8bf7\u6c42\u6a21\u578b"
-                    else -> "\u9898\u5e93 ${event.entryCount}\u6761\u672a\u547d\u4e2d\uff0c\u542f\u52a8 Flash + \u6df1\u5ea6\u6a21\u578b"
+                    !event.enabled -> "题库模式已关闭，启动快速模型"
+                    event.entryCount <= 0 -> "题库加载失败，启动快速模型"
+                    event.matched -> "题库 ${event.entryCount}条，已命中，不请求模型"
+                    else -> "题库 ${event.entryCount}条未命中，启动快速模型"
                 },
             )
             is SolveEvent.CacheHit -> snapshot.copy(
-                state = OverlayState.DeepReady,
-                deepText = event.answer.displayText(),
-                notice = "\u547d\u4e2d\u672c\u5730\u7f13\u5b58",
+                state = OverlayState.FlashReady,
+                flashText = event.answer.displayText(),
+                notice = "命中本地缓存",
             )
             is SolveEvent.QuestionBankHit -> snapshot.copy(
                 state = OverlayState.FlashReady,
                 flashText = event.answer.displayText(),
                 flashElapsedMs = event.elapsedMs,
-                notice = "\u547d\u4e2d\u672c\u5730\u9898\u5e93 ${(event.score * 100).toInt()}%",
+                notice = "命中本地题库 ${(event.score * 100).toInt()}%",
             )
-            is SolveEvent.QuestionBankValidation -> when (event.answer.localCorrect) {
-                false -> snapshot.copy(
-                    state = OverlayState.DeepReady,
-                    deepText = event.answer.displayText(),
-                    deepElapsedMs = event.elapsedMs,
-                    notice = "\u6df1\u5ea6\u6821\u9a8c\u53d1\u73b0\u9898\u5e93\u7b54\u6848\u4e0d\u6b63\u786e\uff0c\u5df2\u4f7f\u7528\u6df1\u5ea6\u6a21\u578b\u7b54\u6848",
-                )
-                true -> snapshot.copy(
-                    state = OverlayState.DeepReady,
-                    deepText = buildString {
-                        appendLine("\u9898\u5e93\u7b54\u6848\u5df2\u901a\u8fc7\u6df1\u5ea6\u6821\u9a8c")
-                        if (event.answer.reasoning.isNotBlank()) append(event.answer.reasoning)
-                    }.trim(),
-                    deepElapsedMs = event.elapsedMs,
-                    notice = "\u6df1\u5ea6\u6821\u9a8c\u901a\u8fc7\uff0c\u4fdd\u7559\u672c\u5730\u9898\u5e93\u7b54\u6848",
-                )
-                null -> snapshot.copy(
-                    state = OverlayState.DeepReady,
-                    deepText = event.answer.displayText(),
-                    deepElapsedMs = event.elapsedMs,
-                    notice = "\u6df1\u5ea6\u6a21\u578b\u672a\u8fd4\u56de\u660e\u786e\u6821\u9a8c\u6807\u8bb0\uff0c\u4fdd\u7559\u672c\u5730\u9898\u5e93\u7b54\u6848",
-                )
-            }
             is SolveEvent.FlashToken -> {
                 overlay.appendFlash(event.token)
                 return
@@ -235,30 +252,11 @@ object OverlayController {
                 state = OverlayState.FlashReady,
                 flashText = event.answer.flashDisplayText(),
                 flashElapsedMs = event.elapsedMs,
-                notice = "\u5feb\u901f\u7b54\u6848\u5df2\u663e\u793a\uff0c\u7b49\u5f85\u6df1\u5ea6\u6a21\u578b",
+                notice = "快速答案已显示",
             )
             is SolveEvent.FlashFailure -> snapshot.copy(
-                state = OverlayState.DeepThinking,
-                flashText = event.message,
-                notice = "\u5feb\u901f\u6a21\u578b\u5931\u8d25\uff0c\u7ee7\u7eed\u7b49\u5f85\u6df1\u5ea6\u6a21\u578b",
-            )
-            is SolveEvent.DeepToken -> {
-                overlay.appendDeep(event.token)
-                return
-            }
-            is SolveEvent.DeepAnswer -> snapshot.copy(
-                state = OverlayState.DeepReady,
-                deepText = event.answer.displayText(),
-                deepElapsedMs = event.elapsedMs,
-                notice = "\u6df1\u5ea6\u7b54\u6848\u5df2\u81ea\u52a8\u66f4\u65b0",
-            )
-            is SolveEvent.DeepTimeout -> snapshot.copy(
-                state = OverlayState.FlashReady,
-                notice = "\u6df1\u5ea6\u6a21\u578b ${event.timeoutSeconds} \u79d2\u5185\u672a\u8fd4\u56de\uff0c\u4fdd\u7559\u5feb\u901f\u7b54\u6848",
-            )
-            is SolveEvent.DeepFailure -> snapshot.copy(
-                state = if (snapshot.flashText.isNotBlank()) OverlayState.FlashReady else OverlayState.Error,
-                notice = "\u6df1\u5ea6\u6a21\u578b\u6682\u65f6\u4e0d\u53ef\u7528\uff0c\u5df2\u4fdd\u7559\u5feb\u901f\u7b54\u6848\uff1a${event.message}",
+                state = OverlayState.Error,
+                notice = "快速模型失败：${event.message}",
             )
             is SolveEvent.Failure -> snapshot.copy(state = OverlayState.Error, notice = event.message)
         }
@@ -267,43 +265,45 @@ object OverlayController {
 
     private fun com.quizassist.model.StructuredAnswer.displayText(): String =
         buildString {
-            if (answer.isNotBlank()) appendLine("\u7b54\u6848\uff1a$answer")
-            if (confidence.isNotBlank()) appendLine("\u7f6e\u4fe1\u5ea6\uff1a$confidence")
+            if (answer.isNotBlank()) appendLine("答案：$answer")
+            if (confidence.isNotBlank()) appendLine("置信度：$confidence")
             if (reasoning.isNotBlank()) appendLine(reasoning)
             if (isBlank()) append(raw)
         }.trim()
 
-    private fun com.quizassist.model.StructuredAnswer.flashDisplayText(): String =
-        raw.takeIf { it.isNotBlank() }?.cleanFlashText() ?: displayText()
-
-    private fun String.cleanFlashText(): String {
-        val cleaned = replace(Regex("""(?i)\bassistant\b[:：]?\s*"""), "")
-            .lines()
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-        val joined = cleaned.joinToString("\n")
-        Regex("""[A-D][\.、]\s*[^\n，。；;]{1,20}""").find(joined)?.value?.let { answer ->
-            return listOf(answer, "\u6839\u636eOCR\u5224\u65ad").joinToString("\n")
-        }
-        Regex("""(?:答案|选择|选)\s*[:：]?\s*([A-D])""").find(joined)?.groupValues?.getOrNull(1)?.let { letter ->
-            return listOf(letter, "\u6839\u636eOCR\u5224\u65ad").joinToString("\n")
-        }
-        if (cleaned.size <= 3) return cleaned.joinToString("\n")
-        val answerLike = cleaned.firstOrNull { line ->
-            line.length <= 30 && (
-                Regex("""^[A-D][\.、\s：:].+""").containsMatchIn(line) ||
-                    line == "\u65e0\u6cd5\u5224\u65ad" ||
-                    !line.contains("\u6211\u4eec") && !line.contains("OCR") && !line.contains("\u9898\u76ee")
-                )
-        }
-        val reasonLike = cleaned.firstOrNull { it != answerLike && it.length <= 30 }
-        return listOfNotNull(answerLike, reasonLike).takeIf { it.isNotEmpty() }?.joinToString("\n")
-            ?: cleaned.takeLast(2).joinToString("\n")
+    /**
+     * 悬浮窗上真正显示的文本。
+     *
+     * 以前这里会把模型输出原样铺上去，模型稍微啰嗦一点就占满半个屏幕。
+     * 现在按用户选的 [AnswerMode] 裁剪：
+     *   ANSWER  只留第一行答案（最多 60 字）
+     *   BRIEF   留前两行（答案 + 一行依据）
+     * 顺手把「答案：」「解析：」这类前缀剥掉，模型爱加，用户不想看。
+     */
+    private fun com.quizassist.model.StructuredAnswer.flashDisplayText(): String {
+        val text = raw.takeIf { it.isNotBlank() } ?: displayText()
+        return text.toOverlayText(com.quizassist.prompt.PromptFactory.answerMode())
     }
 
+    private fun String.toOverlayText(mode: com.quizassist.model.AnswerMode): String {
+        val lines = replace(Regex("""(?i)\bassistant\b[:：]?\s*"""), "")
+            .lines()
+            .map { it.trim().stripAnswerLabel() }
+            .filter { it.isNotBlank() }
+        if (lines.isEmpty()) return ""
+        return if (mode == com.quizassist.model.AnswerMode.BRIEF) {
+            lines.take(2).joinToString("\n")
+        } else {
+            lines.first().take(60)
+        }
+    }
+
+    private fun String.stripAnswerLabel(): String =
+        replace(Regex("""^(答案|答|选|选择|正确选项|解析|理由|依据|分析)\s*[:：]\s*"""), "").trim()
+
     private fun SolveMode.displayName(): String = when (this) {
-        SolveMode.TextOnly -> "\u6587\u672c"
-        SolveMode.Vision -> "\u89c6\u89c9"
+        SolveMode.TextOnly -> "文本"
+        SolveMode.Vision -> "视觉"
     }
 
     private fun overlayParams(): WindowManager.LayoutParams {
@@ -332,7 +332,7 @@ object OverlayController {
         val lp = params ?: return
         val wm = windowManager ?: return
         scope.launch {
-            val settings = store.settings.first()
+            val settings = store.fresh()
             lp.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 if (settings.clickThrough) WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE else 0
             overlay.root.alpha = settings.overlayAlpha

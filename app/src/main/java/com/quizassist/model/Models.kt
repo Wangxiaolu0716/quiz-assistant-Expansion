@@ -11,17 +11,39 @@ data class ProviderConfig(
     val reasoningEffort: String = "",
 )
 
+/** 答题输出风格。悬浮窗屏幕很小，默认只给答案。 */
+enum class AnswerMode(val key: String, val label: String) {
+    /** 只输出答案本身，一行。 */
+    ANSWER("answer", "只给答案"),
+
+    /** 答案 + 一行极简解析。 */
+    BRIEF("brief", "答案+简析");
+
+    companion object {
+        fun from(key: String?): AnswerMode =
+            entries.firstOrNull { it.key == key } ?: ANSWER
+    }
+}
+
 data class AppSettings(
     val flashProvider: ProviderConfig = ModelPresets.flash.first().provider,
-    val deepProvider: ProviderConfig = ModelPresets.deep.first().provider,
     val maxWaitTimeoutSeconds: Int = 60,
+    val autoCaptureIntervalSeconds: Int = 2,
     val useVisionWhenOcrWeak: Boolean = true,
     val showImagePreview: Boolean = false,
     val overlayAlpha: Float = 0.92f,
     val clickThrough: Boolean = false,
     val questionBankMode: Boolean = false,
-    val roi: RoiBox? = RoiBox(0.04f, 0.14f, 0.92f, 0.58f),
-)
+    val bankMatchThreshold: Float = 0.50f,
+    val roi: RoiBox? = RoiBox(0f, 0.35f, 1f, 0.65f),
+    /** 输出风格，见 [AnswerMode]。 */
+    val answerMode: AnswerMode = AnswerMode.ANSWER,
+) {
+    companion object {
+        const val BANK_MATCH_MIN = 0.20f
+        const val BANK_MATCH_MAX = 0.90f
+    }
+}
 
 data class RoiBox(
     val leftRatio: Float,
@@ -74,14 +96,9 @@ sealed interface SolveEvent {
     data class QuestionBankStatus(val enabled: Boolean, val entryCount: Int, val matched: Boolean) : SolveEvent
     data class CacheHit(val answer: StructuredAnswer) : SolveEvent
     data class QuestionBankHit(val answer: StructuredAnswer, val elapsedMs: Long, val score: Float) : SolveEvent
-    data class QuestionBankValidation(val answer: StructuredAnswer, val elapsedMs: Long) : SolveEvent
     data class FlashToken(val token: String) : SolveEvent
     data class FlashAnswer(val answer: StructuredAnswer, val elapsedMs: Long) : SolveEvent
     data class FlashFailure(val message: String) : SolveEvent
-    data class DeepToken(val token: String) : SolveEvent
-    data class DeepAnswer(val answer: StructuredAnswer, val elapsedMs: Long) : SolveEvent
-    data class DeepTimeout(val timeoutSeconds: Int) : SolveEvent
-    data class DeepFailure(val message: String) : SolveEvent
     data class Failure(val message: String, val cause: Throwable? = null) : SolveEvent
 }
 
@@ -91,8 +108,6 @@ data class SolveSnapshot(
     val ocrText: String = "",
     val flashText: String = "",
     val flashElapsedMs: Long? = null,
-    val deepText: String = "",
-    val deepElapsedMs: Long? = null,
     val notice: String = "",
 )
 
@@ -101,7 +116,5 @@ enum class OverlayState {
     Capturing,
     Recognizing,
     FlashReady,
-    DeepThinking,
-    DeepReady,
     Error,
 }

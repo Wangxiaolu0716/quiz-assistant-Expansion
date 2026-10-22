@@ -1,0 +1,49 @@
+{
+  "configVersion": 2,
+  "appTitle": "答题助手纪念版",
+  "subtitle": "截图识题、快速回答、联网搜索、题库检索",
+  "securityNotice": "应用不会上传你的密钥。请仅通过官方发布渠道获取安装包，非官方安装包可能导致密钥泄露。当前 拓展版 版本号 2.5.7",
+  "setupGuide": "配置：选择填写 deepseek-v4-flash（够用了）把 apikey 填进去，题库题目数量够多可以不用填!!! 保存后授权截图并启动悬浮窗。本版本经过原版 @小多答题助手 优化改造后发布，有问题再说吧应该没问题了，如果你是付费得到该软件...no~你被骗了 赶快去退款！！-_-",
+  "sponsorTitle": "我想赞助！",
+  "sponsorText": "感谢支持主角！你的打赏是我持续更新下去的动力。",
+  "sponsorHint": "长按图片即可保存到相册",
+  "announcements": [
+    {
+      "id": "a-2026-10-22-server",
+      "title": "服务器已上线",
+      "content": "公告和配置已迁到自有服务器，加载更快、更新更及时。\n题库和提示词之后都能远程更新，不用每次都重装。",
+      "level": "normal",
+      "once": true,
+      "minVersionCode": 20507,
+      "startAt": 0,
+      "endAt": 0
+    }
+  ],
+  "latestVersionCode": 20507,
+  "latestVersionName": "2.5.7",
+  "downloadUrl": "https://1830730622.share.123pan.cn/123pan/p0CLjv-JsdCd?pwd=1002#",
+  "updateContent": "1. 公告改为服务器下发：支持多公告、定时生效、按版本定向、强制公告。\n2. 配置带 ETag 条件请求，启动先用缓存渲染，不再卡在拉公告。\n3. 版本更新增加「最低支持版本」，低于该版本必须更新。\n4. 答题提示词重写：先还原题干再作答，选项字母只允许取 OCR 里真实出现过的。",
+  "minSupportedVersionCode": 0,
+  "apkSha256": "",
+  "features": {
+    "enableSearchDefault": true,
+    "enableVision": true,
+    "maxWaitSeconds": 0,
+    "captureIntervalSeconds": 0,
+    "promptProfile": "v2",
+    "disableQuestionBank": false,
+    "enableReport": true,
+    "allowQuestionTelemetry": false
+  },
+  "prompt": {
+    "version": 0,
+    "flashSystem": "",
+    "searchSystem": "",
+    "maxTokens": 96,
+    "temperature": null
+  },
+  "announcementId": "",
+  "announcementTitle": "",
+  "announcementContent": "",
+  "downloadUrlAlt": ""
+}

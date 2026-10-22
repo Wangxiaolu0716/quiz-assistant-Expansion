@@ -6,10 +6,12 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
 
     <application
         android:allowBackup="false"
-        android:label="&#23567;&#22810;&#31572;&#39064;&#21161;&#25163;"
+        android:icon="@drawable/logo"
+        android:label="答题助手拓展版"
         android:supportsRtl="true"
         android:theme="@style/Theme.QuizAssist">
         <activity

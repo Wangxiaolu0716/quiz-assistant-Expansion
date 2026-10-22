@@ -17,11 +17,25 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.quizassist"
+        applicationId = "com.wangxiaolu.quizassist"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 20508
+        versionName = "2.5.8"
+
+        // ---- 远程配置端点（改这里就行，不用翻代码）----
+        // 你自己的服务器主源；留空则跳过，直接走 Gitee 备源。
+        // 例：https://api.your-domain.com/api/v1/client/config
+        buildConfigField(
+            "String",
+            "CONFIG_PRIMARY_URL",
+            "\"https://xuhuohua.xyz/quiz-api/client/config\"",
+        )
+        // 备源已下线（2026-10-22）：Gitee 那套静态 JSON 不再维护。
+        // 现在只有「主源 → 本地缓存 → 内置默认值」三层，服务器故障时用缓存兜底。
+        buildConfigField("String", "CONFIG_FALLBACK_URL", "\"\"")
+        // 匿名上报端点；留空则不上报
+        buildConfigField("String", "CONFIG_REPORT_URL", "\"https://xuhuohua.xyz/quiz-api/client/report\"")
     }
 
     buildFeatures {

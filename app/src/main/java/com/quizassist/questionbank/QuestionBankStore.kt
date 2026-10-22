@@ -28,6 +28,17 @@ class QuestionBankStore(context: Context) {
         return ImportResult(displayName, entries.size)
     }
 
+    fun importBuiltInIfEmpty(): ImportResult? = if (!file.exists()) importBuiltIn() else null
+
+    fun importBuiltIn(): ImportResult {
+        val content = appContext.assets.open(BUILT_IN_ASSET).bufferedReader(Charsets.UTF_8).use { it.readText() }
+        val parsed = QuestionBankParser.parseAuto(content)
+        if (parsed.entries.isEmpty()) error("内置题库没有可用题目")
+        file.writeText(json.encodeToString(parsed.entries), Charsets.UTF_8)
+        metadata.edit().putString(KEY_NAME, "内置题库").apply()
+        return ImportResult("内置题库", parsed.entries.size, parsed.format.label, parsed.columns)
+    }
+
     fun clear() {
         file.delete()
         metadata.edit().remove(KEY_NAME).apply()
@@ -36,8 +47,12 @@ class QuestionBankStore(context: Context) {
     fun entries(): List<QuestionBankEntry> =
         runCatching {
             if (!file.exists()) emptyList()
-            else QuestionBankParser.parse(file.readText(Charsets.UTF_8), csv = false)
+            else QuestionBankParser.parseAuto(file.readText(Charsets.UTF_8)).entries
         }.getOrDefault(emptyList())
+
+    fun signature(): String =
+        if (!file.exists()) "none"
+        else "${file.lastModified()}:${file.length()}"
 
     fun info(): ImportInfo = ImportInfo(entries().size, metadata.getString(KEY_NAME, "").orEmpty())
 
@@ -47,12 +62,20 @@ class QuestionBankStore(context: Context) {
         }.orEmpty()
     }.getOrDefault("").ifBlank { uri.lastPathSegment.orEmpty().ifBlank { "question-bank" } }
 
-    data class ImportResult(val name: String, val count: Int)
+    data class ImportResult(
+        val name: String,
+        val count: Int,
+        /** 识别到的格式，例如「CSV（逗号）」。 */
+        val format: String = "",
+        /** 识别到的列角色，例如「题目 / 选项 / 答案」。 */
+        val columns: String = "",
+    )
     data class ImportInfo(val count: Int, val name: String)
 
     private companion object {
         const val FILE_NAME = "question_bank.json"
         const val METADATA_NAME = "question_bank_metadata"
         const val KEY_NAME = "name"
+        const val BUILT_IN_ASSET = "1.csv"
     }
 }
