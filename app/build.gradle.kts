@@ -20,8 +20,8 @@ android {
         applicationId = "com.wangxiaolu.quizassist"
         minSdk = 26
         targetSdk = 35
-        versionCode = 20510
-        versionName = "2.5.10"
+        versionCode = 20511
+        versionName = "2.5.11"
 
         // ---- 远程配置端点 ----
         //

@@ -114,6 +114,9 @@ class MainActivity : ComponentActivity() {
     private var announcementQueue by mutableStateOf(emptyList<Announcement>())
     private var updateVisible by mutableStateOf(false)
 
+    /** 手动检查更新时防重复点击。 */
+    private var checkingUpdate by mutableStateOf(false)
+
     private val importQuestionBank = registerForActivityResult(
         ActivityResultContracts.OpenDocument(),
     ) { uri ->
@@ -178,6 +181,7 @@ class MainActivity : ComponentActivity() {
                         onRequestOverlayPermission = { requestOverlayPermission() },
                         onStartProjection = { requestProjection() },
                         onStartOverlay = { showOverlay() },
+                        onCheckUpdate = { checkUpdateNow() },
                     )
 
                     announcementQueue.firstOrNull()?.let { announcement ->
@@ -326,6 +330,37 @@ class MainActivity : ComponentActivity() {
             .onFailure { toast("打开链接失败：${it.message.orEmpty()}") }
     }
 
+    /**
+     * 手动检查更新：点右上角版本号触发。
+     *
+     * 和启动时那次刷新不同 —— 这里强制忽略 ETag 和「用户点过稍后」的记录，
+     * 明确告诉用户「已经是最新」还是「有新版本」，别让人猜。
+     */
+    private fun checkUpdateNow() {
+        if (checkingUpdate) return
+        checkingUpdate = true
+        toast("正在检查更新…")
+        lifecycleScope.launch {
+            try {
+                val snapshot = RemoteConfigLoader.refresh(this@MainActivity, force = true)
+                applyConfig(snapshot.config)
+                val latest = snapshot.config.latestVersionCode
+                if (latest <= BuildConfig.VERSION_CODE || snapshot.config.downloadUrl.isBlank()) {
+                    toast("已是最新版本 v${BuildConfig.VERSION_NAME}")
+                } else {
+                    // 手动检查不吃「忽略过」那一套，直接弹
+                    getSharedPreferences("update", MODE_PRIVATE)
+                        .edit().remove("ignored_version_code").apply()
+                    updateVisible = true
+                }
+            } catch (t: Throwable) {
+                toast("检查失败：${t.message.orEmpty()}")
+            } finally {
+                checkingUpdate = false
+            }
+        }
+    }
+
     private fun openUpdate(url: String) {
         if (url.isBlank()) {
             toast("这个下载源还没配好")
@@ -392,6 +427,7 @@ private fun AppRoot(
     onRequestOverlayPermission: () -> Unit,
     onStartProjection: () -> Unit,
     onStartOverlay: () -> Unit,
+    onCheckUpdate: () -> Unit,
 ) {
     AnimatedContent(
         targetState = showSponsor,
@@ -420,6 +456,7 @@ private fun AppRoot(
                 onStartProjection = onStartProjection,
                 onStartOverlay = onStartOverlay,
                 onSponsor = { onSponsorChange(true) },
+                onCheckUpdate = onCheckUpdate,
             )
         }
     }
@@ -490,6 +527,7 @@ private fun SettingsScreen(
     onStartProjection: () -> Unit,
     onStartOverlay: () -> Unit,
     onSponsor: () -> Unit,
+    onCheckUpdate: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -531,6 +569,7 @@ private fun SettingsScreen(
             title = config.appTitle,
             subtitle = config.subtitle,
             version = "v${BuildConfig.VERSION_NAME}",
+            onCheckVersion = onCheckUpdate,
         )
 
         SegmentedTabs(
@@ -578,6 +617,7 @@ private fun SettingsScreen(
 
                         Tab.Launch -> LaunchTab(
                             config = config,
+                            onCheckUpdate = onCheckUpdate,
                             hint = saveMessage,
                             historyCount = history.size,
                             onRequestOverlayPermission = onRequestOverlayPermission,
@@ -615,7 +655,12 @@ private fun SettingsScreen(
 }
 
 @Composable
-private fun Header(title: String, subtitle: String, version: String) {
+private fun Header(
+    title: String,
+    subtitle: String,
+    version: String,
+    onCheckVersion: () -> Unit = {},
+) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -635,7 +680,7 @@ private fun Header(title: String, subtitle: String, version: String) {
                 modifier = Modifier.weight(1f),
             )
             Spacer(Modifier.width(10.dp))
-            VersionChip(version)
+            VersionChip(version, onCheckVersion)
         }
         Spacer(Modifier.height(4.dp))
         Text(
@@ -649,11 +694,12 @@ private fun Header(title: String, subtitle: String, version: String) {
 }
 
 @Composable
-private fun VersionChip(version: String) {
+private fun VersionChip(version: String, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(999.dp))
             .background(Ink.accentSoft)
+            .clickable(onClick = onClick)
             .padding(horizontal = 9.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -670,6 +716,8 @@ private fun VersionChip(version: String) {
             fontWeight = FontWeight.SemiBold,
             color = Ink.accentInk,
         )
+        Spacer(Modifier.width(3.dp))
+        Text("⌕", fontSize = 10.5.sp, color = Ink.accentInk.copy(alpha = 0.7f))
     }
 }
 
@@ -842,7 +890,26 @@ private fun LaunchTab(
     onStartOverlay: () -> Unit,
     onShowHistory: () -> Unit,
     onSponsor: () -> Unit,
+    onCheckUpdate: () -> Unit,
 ) {
+    Card8("版本", "点任意一行与服务器校对，看看是不是最新") {
+        ListRow(
+            title = "当前版本",
+            value = "v${BuildConfig.VERSION_NAME}（${BuildConfig.VERSION_CODE}）",
+            onClick = onCheckUpdate,
+        )
+        HorizontalDivider(color = Ink.line, thickness = 1.dp)
+        ListRow(
+            title = "服务器最新",
+            value = if (config.latestVersionCode > 0) {
+                "v${config.latestVersionName}（${config.latestVersionCode}）"
+            } else {
+                "还没拉到，点一下检查"
+            },
+            onClick = onCheckUpdate,
+        )
+    }
+
     Card8("权限", "首次使用按顺序点一遍") {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = onRequestOverlayPermission, shape = RoundedCornerShape(11.dp)) {
@@ -876,17 +943,19 @@ private fun LaunchTab(
         )
     }
 
-    if (config.setupGuide.isNotBlank()) {
+    val guide = config.setupGuide.replace("{version}", BuildConfig.VERSION_NAME)
+    if (guide.isNotBlank()) {
         Text(
-            config.setupGuide,
+            guide,
             color = Ink.faint,
             style = MaterialTheme.typography.bodySmall,
             lineHeight = 18.sp,
         )
     }
-    if (config.securityNotice.isNotBlank()) {
+    val notice = config.securityNotice.replace("{version}", BuildConfig.VERSION_NAME)
+    if (notice.isNotBlank()) {
         Text(
-            config.securityNotice,
+            notice,
             color = Ink.faint,
             style = MaterialTheme.typography.bodySmall,
             lineHeight = 18.sp,
