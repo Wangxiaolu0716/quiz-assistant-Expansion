@@ -30,3 +30,24 @@ captures/
 *.keystore
 *.jks
 signing.properties
+
+# 发版凭据（SSH / 后台 token / 网盘 token / GitHub token）
+.env
+.env.local
+
+# 运行时数据
+server/data/*.ndjson
+server/data/*.ndjson.*
+.check/
+
+# 编辑器/工具本地配置
+.claude/
+
+# 临时文件
+*.tmp
+.sha.tmp
+.rn.md
+
+# 内部文档与凭据（不进公开仓库）
+private/
+AGENTS.local.md

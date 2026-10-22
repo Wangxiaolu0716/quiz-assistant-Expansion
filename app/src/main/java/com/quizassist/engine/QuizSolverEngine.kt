@@ -14,12 +14,10 @@ import com.quizassist.questionbank.QuestionBankMatcher
 import kotlin.system.measureTimeMillis
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 class QuizSolverEngine(
@@ -46,7 +44,7 @@ class QuizSolverEngine(
 
         val bankStartedAt = System.nanoTime()
         val hit = if (settings.questionBankMode) {
-            questionBankMatcher.find(input.ocr?.text.orEmpty())
+            questionBankMatcher.find(input.ocr?.text.orEmpty(), settings.bankMatchThreshold)
         } else {
             null
         }
@@ -67,38 +65,6 @@ class QuizSolverEngine(
                 val elapsed = (System.nanoTime() - bankStartedAt) / 1_000_000L
                 send(SolveEvent.QuestionBankHit(answer, elapsed, hit.score))
                 answerCache.save(input.cacheKey, input.ocr?.text.orEmpty(), answer)
-                launch {
-                    val raw = StringBuilder()
-                    val startedAt = System.nanoTime()
-                    try {
-                        val completed = withTimeoutOrNull(settings.maxWaitTimeoutSeconds * 1000L) {
-                            llmRepository.streamAnswer(
-                                settings.deepProvider,
-                                input,
-                                deep = true,
-                                localAnswer = answer.answer,
-                            ).collect { token ->
-                                raw.append(token)
-                                send(SolveEvent.DeepToken(token))
-                            }
-                            true
-                        } ?: false
-                        val validationElapsed = (System.nanoTime() - startedAt) / 1_000_000L
-                        if (!completed) {
-                            send(SolveEvent.DeepTimeout(settings.maxWaitTimeoutSeconds))
-                            return@launch
-                        }
-                        val validation = llmRepository.parseStructuredAnswer(raw.toString())
-                        send(SolveEvent.QuestionBankValidation(validation, validationElapsed))
-                        if (validation.localCorrect == false && validation.answer.isNotBlank()) {
-                            answerCache.save(input.cacheKey, input.ocr?.text.orEmpty(), validation)
-                        }
-                    } catch (cancel: CancellationException) {
-                        throw cancel
-                    } catch (t: Throwable) {
-                        send(SolveEvent.DeepFailure("Deep model validation failed: ${t.message.orEmpty()}"))
-                    }
-                }
                 return@channelFlow
             }
         }
@@ -111,66 +77,35 @@ class QuizSolverEngine(
         }
 
         val questionText = input.ocr?.text.orEmpty()
-        val flashDeferred = async {
-            val raw = StringBuilder()
-            var elapsed = 0L
-            try {
-                elapsed = measureTimeMillis {
-                    llmRepository.streamAnswer(settings.flashProvider, input, deep = false).collect { token ->
-                        raw.append(token)
-                    }
-                }
-                val answer = llmRepository.parseStructuredAnswer(raw.toString())
-                send(SolveEvent.FlashAnswer(answer, elapsed))
-                answer
-            } catch (cancel: CancellationException) {
-                throw cancel
-            } catch (t: Throwable) {
-                send(SolveEvent.FlashFailure("Flash model failed: ${t.message.orEmpty()}"))
-                null
+
+        // 未配置 API Key 时提前拦截，给出可操作的提示，避免走到网络层抛出英文报错。
+        if (settings.flashProvider.apiKey.isBlank()) {
+            val bankCount = questionBankMatcher.entryCount
+            val hint = when {
+                !settings.questionBankMode -> "未开启本地题库，且未配置 API Key。请到设置中填写 API Key，或导入题库并开启「优先使用本地题库」。"
+                bankCount <= 0 -> "未导入本地题库，且未配置 API Key。请到设置中填写 API Key，或先导入题库。"
+                else -> "本地题库（${bankCount} 题）未命中本题，且未配置 API Key。请到设置中填写 API Key，或确认题干与题库一致。"
             }
+            send(SolveEvent.FlashFailure(hint))
+            return@channelFlow
         }
 
-        val deepDeferred = async {
-            val raw = StringBuilder()
-            var elapsed = 0L
-            try {
-                elapsed = measureTimeMillis {
-                    llmRepository.streamAnswer(settings.deepProvider, input, deep = true).collect { token ->
+        val raw = StringBuilder()
+        try {
+            val elapsed = measureTimeMillis {
+                withTimeoutOrNull(settings.maxWaitTimeoutSeconds * 1000L) {
+                    llmRepository.streamAnswer(settings.flashProvider, input).collect { token ->
                         raw.append(token)
-                        send(SolveEvent.DeepToken(token))
                     }
-                }
-                val answer = llmRepository.parseStructuredAnswer(raw.toString())
-                send(SolveEvent.DeepAnswer(answer, elapsed))
-                answerCache.save(input.cacheKey, questionText, answer)
-                answer
-            } catch (cancel: CancellationException) {
-                throw cancel
-            } catch (t: Throwable) {
-                send(SolveEvent.DeepFailure("Deep model failed: ${t.message.orEmpty()}"))
-                null
+                } ?: error("快速模型超时，请稍后重试")
             }
-        }
-
-        val deepTimed = async {
-            val answer = withTimeoutOrNull(settings.maxWaitTimeoutSeconds * 1000L) {
-                deepDeferred.await()
-            }
-            TimedAnswer(completed = deepDeferred.isCompleted, answer = answer)
-        }
-        launch {
-            val deepResult = deepTimed.await()
-            if (!deepResult.completed) {
-                deepDeferred.cancel()
-                send(SolveEvent.DeepTimeout(settings.maxWaitTimeoutSeconds))
-            }
-            if (deepResult.answer == null) {
-                val finalFlashAnswer = flashDeferred.await()
-                if (finalFlashAnswer != null) {
-                    answerCache.save(input.cacheKey, questionText, finalFlashAnswer)
-                }
-            }
+            val answer = llmRepository.parseStructuredAnswer(raw.toString())
+            send(SolveEvent.FlashAnswer(answer, elapsed))
+            answerCache.save(input.cacheKey, questionText, answer)
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (t: Throwable) {
+            send(SolveEvent.FlashFailure(t.message.orEmpty()))
         }
     }.flowOn(Dispatchers.Default)
 
@@ -183,7 +118,7 @@ class QuizSolverEngine(
         val enhancedOcr = runCatching { ocrProcessor.recognize(enhanced) }.getOrNull()
         val originalOcr = if (enhancedOcr?.usable == true) {
             null
-        } else if (enhancedOcr != null && enhancedOcr.text.count { it in '\u4e00'..'\u9fff' } >= 6) {
+        } else if (enhancedOcr != null && enhancedOcr.text.count { it.code in 0x4E00..0x9FFF } >= 6) {
             null
         } else {
             runCatching { ocrProcessor.recognize(cropped) }.getOrNull()
@@ -207,9 +142,4 @@ class QuizSolverEngine(
             cacheKey = key,
         )
     }
-
-    private data class TimedAnswer(
-        val completed: Boolean,
-        val answer: com.quizassist.model.StructuredAnswer?,
-    )
 }

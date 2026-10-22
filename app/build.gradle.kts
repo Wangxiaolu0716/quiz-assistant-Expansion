@@ -17,11 +17,35 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.quizassist"
+        applicationId = "com.wangxiaolu.quizassist"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 20509
+        versionName = "2.5.9"
+
+        // ---- 远程配置端点 ----
+        //
+        // 仓库里**不写死任何服务器地址**：地址从 local.properties（已 gitignore）或
+        // Gradle 属性读，读不到就是空字符串 —— 客户端进入完全离线模式，
+        // 不拉配置、不弹公告、不检查更新、不上报。
+        //
+        //   local.properties:
+        //     configUrl=https://你的域名/api/client/config
+        //     reportUrl=https://你的域名/api/client/report
+        //
+        // 或者命令行：
+        //   ./gradlew assembleRelease -PconfigUrl=... -PreportUrl=...
+        val localProps = Properties().apply {
+            val f = rootProject.file("local.properties")
+            if (f.exists()) f.inputStream().use { load(it) }
+        }
+        fun remoteValue(key: String): String =
+            (project.findProperty(key) as String?) ?: localProps.getProperty(key) ?: ""
+
+        buildConfigField("String", "CONFIG_PRIMARY_URL", "\"${remoteValue("configUrl")}\"")
+        // 备源已下线，只保留「主源 → 本地缓存 → 内置默认值」三层
+        buildConfigField("String", "CONFIG_FALLBACK_URL", "\"\"")
+        buildConfigField("String", "CONFIG_REPORT_URL", "\"${remoteValue("reportUrl")}\"")
     }
 
     buildFeatures {

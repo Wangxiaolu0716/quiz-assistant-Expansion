@@ -5,9 +5,9 @@ import com.quizassist.model.QuizInput
 import com.quizassist.model.SolveMode
 import com.quizassist.model.StructuredAnswer
 import com.quizassist.prompt.PromptFactory
+import com.quizassist.prompt.RemoteRuntime
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -44,41 +44,36 @@ class LLMRepository(
     fun streamAnswer(
         provider: ProviderConfig,
         input: QuizInput,
-        deep: Boolean,
-        localAnswer: String? = null,
     ): Flow<String> = flow {
-        require(provider.apiKey.isNotBlank()) { "API Key is empty. Configure it in Settings first." }
-        val useResponsesSearch = deep && provider.enableSearchHint
+        require(provider.apiKey.isNotBlank()) { "API Key 为空，请先在设置中填写 API Key。" }
+        val useResponsesSearch = provider.enableSearchHint
         val requests = if (useResponsesSearch) {
-            listOf(buildResponsesRequest(provider, input, localAnswer))
-        } else if (!deep && provider.modelName.isDeepSeekModel()) {
+            listOf(buildResponsesRequest(provider, input))
+        } else if (provider.modelName.isDeepSeekModel()) {
             listOf(
-                buildChatRequest(provider, input, deep = false, disableThinking = true, localAnswer = localAnswer),
-                buildChatRequest(provider, input, deep = false, disableThinking = false, localAnswer = localAnswer),
+                buildChatRequest(provider, input, disableThinking = true),
+                buildChatRequest(provider, input, disableThinking = false),
             )
         } else {
-            listOf(buildChatRequest(provider, input, deep, localAnswer = localAnswer))
+            listOf(buildChatRequest(provider, input))
         }
         var requestIndex = 0
-        var upstreamAttempt = 0
         while (requestIndex < requests.size) {
             val request = requests[requestIndex]
             try {
-                if (!deep) {
+                if (useResponsesSearch) {
+                    executeStreamingRequest(request, responsesMode = true) { token -> emit(token) }
+                } else {
                     val full = executeBlockingRequest(request, timeoutSeconds = FLASH_TIMEOUT_SECONDS)
                     if (full.isNotBlank()) emit(full)
-                } else {
-                    executeStreamingRequest(request, responsesMode = useResponsesSearch) { token -> emit(token) }
                 }
                 return@flow
             } catch (t: Throwable) {
-                if (!deep && requestIndex == 0 && requests.size > 1 && t.isUnsupportedThinkingParameter()) {
+                if (!useResponsesSearch && requestIndex == 0 && requests.size > 1 && t.isUnsupportedThinkingParameter()) {
                     requestIndex++
                     continue
                 }
-                if (!deep || !t.isRetryableUpstreamError() || upstreamAttempt >= 1) throw t
-                upstreamAttempt++
-                delay(900L)
+                throw t
             }
         }
     }.flowOn(Dispatchers.IO)
@@ -180,35 +175,29 @@ class LLMRepository(
     private fun buildChatRequest(
         provider: ProviderConfig,
         input: QuizInput,
-        deep: Boolean,
         disableThinking: Boolean = false,
-        localAnswer: String? = null,
     ): Request {
         val endpoint = provider.baseUrl.trimEnd('/') + "/chat/completions"
-        val system = if (deep) {
-            PromptFactory.deepSystem(provider.enableSearchHint, localAnswer)
-        } else {
-            PromptFactory.flashSystem()
-        }
+        val system = PromptFactory.flashSystem()
         val messages = listOf(
             ChatMessage("system", JsonPrimitive(system)),
             ChatMessage(
                 "user",
                 if (provider.modelName.prefersTextOnly()) {
-                    textOnlyUserContent(input, localAnswer)
+                    textOnlyUserContent(input)
                 } else {
-                    userContent(input, localAnswer)
+                    userContent(input)
                 },
             ),
         )
         val payload = ChatCompletionRequest(
             model = provider.modelName,
             messages = messages,
-            temperature = provider.temperature,
-            stream = deep,
-            reasoningEffort = if (deep) provider.reasoningEffort.trim().takeIf { it.isNotBlank() } else null,
-            maxTokens = if (deep) 512 else 64,
-            thinking = if (!deep && disableThinking) {
+            temperature = RemoteRuntime.temperature(provider.temperature),
+            stream = false,
+            reasoningEffort = null,
+            maxTokens = RemoteRuntime.maxTokens(DEFAULT_MAX_TOKENS),
+            thinking = if (disableThinking) {
                 ThinkingConfig(type = "disabled")
             } else {
                 null
@@ -217,7 +206,7 @@ class LLMRepository(
         return jsonPost(endpoint, provider.apiKey, json.encodeToString(payload))
     }
 
-    private fun buildResponsesRequest(provider: ProviderConfig, input: QuizInput, localAnswer: String?): Request {
+    private fun buildResponsesRequest(provider: ProviderConfig, input: QuizInput): Request {
         val endpoint = provider.baseUrl.trimEnd('/') + "/responses"
         val reasoningEffort = provider.reasoningEffort.trim().takeIf { it.isNotBlank() }
         val payload = ResponsesRequest(
@@ -225,17 +214,17 @@ class LLMRepository(
             input = listOf(
                 ResponseInputMessage(
                     role = "system",
-                    content = listOf(ResponseInputContent(type = "input_text", text = PromptFactory.deepSystem(true, localAnswer))),
+                    content = listOf(ResponseInputContent(type = "input_text", text = PromptFactory.searchSystem())),
                 ),
                 ResponseInputMessage(
                     role = "user",
-                    content = listOf(ResponseInputContent(type = "input_text", text = searchUserText(input, localAnswer))),
+                    content = listOf(ResponseInputContent(type = "input_text", text = searchUserText(input))),
                 ),
             ),
             tools = listOf(ResponseTool(type = "web_search")),
             reasoning = reasoningEffort?.let { ResponseReasoning(effort = it) },
             stream = true,
-            maxOutputTokens = 512,
+            maxOutputTokens = RemoteRuntime.maxTokens(RESPONSES_MAX_OUTPUT_TOKENS),
         )
         return jsonPost(endpoint, provider.apiKey, json.encodeToString(payload))
     }
@@ -249,13 +238,13 @@ class LLMRepository(
             .post(payload.toRequestBody("application/json".toMediaType()))
             .build()
 
-    private fun userContent(input: QuizInput, localAnswer: String? = null) =
+    private fun userContent(input: QuizInput) =
         if (input.mode == SolveMode.Vision && input.imageBase64Jpeg != null) {
             buildJsonArray {
                 add(
                     buildJsonObject {
                         put("type", "text")
-                        put("text", PromptFactory.userPrompt(input, localAnswer))
+                        put("text", PromptFactory.userPrompt(input))
                     },
                 )
                 add(
@@ -268,17 +257,17 @@ class LLMRepository(
                 )
             }
         } else {
-            JsonPrimitive(PromptFactory.userPrompt(input, localAnswer))
+            JsonPrimitive(PromptFactory.userPrompt(input))
         }
 
-    private fun textOnlyUserContent(input: QuizInput, localAnswer: String? = null): JsonPrimitive =
-        JsonPrimitive(PromptFactory.userPrompt(input, localAnswer))
+    private fun textOnlyUserContent(input: QuizInput): JsonPrimitive =
+        JsonPrimitive(PromptFactory.userPrompt(input))
 
-    private fun searchUserText(input: QuizInput, localAnswer: String? = null): String =
+    private fun searchUserText(input: QuizInput): String =
         buildString {
-            appendLine(PromptFactory.userPrompt(input, localAnswer))
+            appendLine(PromptFactory.userPrompt(input))
             appendLine()
-            appendLine("当前深度模型已启用 Responses API 联网搜索。请优先用题干 OCR 文本检索官方资料、百科、攻略站、社区资料或活动说明。")
+            appendLine("已启用 Responses API 联网搜索。请优先用题干 OCR 文本检索官方资料、百科、攻略站、社区资料或活动说明。")
             appendLine("注意：本次联网请求只发送文本，不附带截图；如果 OCR 不完整，请基于可识别文字进行保守判断，并降低置信度。")
         }.trim()
 
@@ -419,6 +408,12 @@ class LLMRepository(
 
     companion object {
         private const val FLASH_TIMEOUT_SECONDS = 15L
+
+        /** 非联网模式输出上限：两行短答案足够，留一点余量防截断。 */
+        private const val DEFAULT_MAX_TOKENS = 96
+
+        /** 联网模式输出上限：要装下 JSON + 简短依据。 */
+        private const val RESPONSES_MAX_OUTPUT_TOKENS = 512
 
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)

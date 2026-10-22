@@ -23,7 +23,7 @@ class RoiOverlayView(
         style = Paint.Style.FILL
     }
     private val rect = RectF()
-    private var roi = RoiBox(0.08f, 0.22f, 0.84f, 0.38f)
+    private var roi = RoiBox(0f, 0.35f, 1f, 0.65f)
     private var lastX = 0f
     private var lastY = 0f
 

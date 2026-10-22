@@ -9,7 +9,6 @@ import com.quizassist.model.ProviderConfig
 import com.quizassist.model.RoiBox
 import java.nio.ByteBuffer
 import java.security.KeyStore
-import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -24,19 +23,29 @@ class SettingsStore(context: Context) {
 
     init {
         migratePlaintextApiKeys()
+        migrateRoiDefault()
     }
 
     private val state = MutableStateFlow(load())
 
     val settings: Flow<AppSettings> = state.asStateFlow()
 
+    /** 当前已保存的配置快照（同步读取，无需订阅）。 */
+    val currentSettings: AppSettings get() = state.value
+
+    /** 重新从磁盘读取最新配置（供悬浮窗等长期存活组件避免使用过期快照）。 */
+    fun fresh(): AppSettings = load()
+
     suspend fun update(transform: (AppSettings) -> AppSettings) {
         save(transform(state.value))
     }
 
-    suspend fun save(next: AppSettings) {
+    suspend fun save(next: AppSettings) = persist(next)
+
+    fun saveSync(next: AppSettings) = persist(next)
+
+    private fun persist(next: AppSettings) {
         validateBaseUrl(next.flashProvider.baseUrl)
-        validateBaseUrl(next.deepProvider.baseUrl)
         val ok = prefs.edit()
             .putString(Keys.flashBaseUrl, next.flashProvider.baseUrl)
             .putString(Keys.flashApiKey, keyCipher.encrypt(next.flashProvider.apiKey))
@@ -44,18 +53,15 @@ class SettingsStore(context: Context) {
             .putString(Keys.flashTemperature, next.flashProvider.temperature.toString())
             .putString(Keys.flashSearch, next.flashProvider.enableSearchHint.toString())
             .putString(Keys.flashReasoning, next.flashProvider.reasoningEffort)
-            .putString(Keys.deepBaseUrl, next.deepProvider.baseUrl)
-            .putString(Keys.deepApiKey, keyCipher.encrypt(next.deepProvider.apiKey))
-            .putString(Keys.deepModel, next.deepProvider.modelName)
-            .putString(Keys.deepTemperature, next.deepProvider.temperature.toString())
-            .putString(Keys.deepSearch, next.deepProvider.enableSearchHint.toString())
-            .putString(Keys.deepReasoning, next.deepProvider.reasoningEffort)
             .putString(Keys.maxWait, next.maxWaitTimeoutSeconds.coerceIn(MIN_WAIT_SECONDS, MAX_WAIT_SECONDS).toString())
             .putString(Keys.useVision, next.useVisionWhenOcrWeak.toString())
             .putString(Keys.showPreview, next.showImagePreview.toString())
             .putString(Keys.overlayAlpha, next.overlayAlpha.coerceIn(0.35f, 1f).toString())
             .putString(Keys.clickThrough, next.clickThrough.toString())
             .putString(Keys.questionBankMode, next.questionBankMode.toString())
+            .putString(Keys.bankMatchThreshold, next.bankMatchThreshold.coerceIn(AppSettings.BANK_MATCH_MIN, AppSettings.BANK_MATCH_MAX).toString())
+            .putString(Keys.autoCaptureInterval, next.autoCaptureIntervalSeconds.coerceIn(1, 5).toString())
+            .putString(Keys.answerMode, next.answerMode.key)
             .applyRoi(next.roi)
             .commit()
         if (!ok) error("SharedPreferences commit failed")
@@ -66,10 +72,10 @@ class SettingsStore(context: Context) {
         val default = AppSettings()
         val roi = if (prefs.contains(Keys.roiLeft)) {
             RoiBox(
-                leftRatio = prefs.readFloat(Keys.roiLeft, 0.08f),
-                topRatio = prefs.readFloat(Keys.roiTop, 0.22f),
-                widthRatio = prefs.readFloat(Keys.roiWidth, 0.84f),
-                heightRatio = prefs.readFloat(Keys.roiHeight, 0.38f),
+                leftRatio = prefs.readFloat(Keys.roiLeft, 0f),
+                topRatio = prefs.readFloat(Keys.roiTop, 0.35f),
+                widthRatio = prefs.readFloat(Keys.roiWidth, 1f),
+                heightRatio = prefs.readFloat(Keys.roiHeight, 0.65f),
             ).takeIf { it.isValid() }
         } else {
             null
@@ -84,22 +90,19 @@ class SettingsStore(context: Context) {
                 enableSearchHint = prefs.readBoolean(Keys.flashSearch, default.flashProvider.enableSearchHint),
                 reasoningEffort = prefs.readString(Keys.flashReasoning, default.flashProvider.reasoningEffort),
             ),
-            deepProvider = ProviderConfig(
-                baseUrl = prefs.readString(Keys.deepBaseUrl, default.deepProvider.baseUrl),
-                apiKey = readApiKey(Keys.deepApiKey, default.deepProvider.apiKey),
-                modelName = prefs.readString(Keys.deepModel, default.deepProvider.modelName),
-                temperature = prefs.readDouble(Keys.deepTemperature, default.deepProvider.temperature),
-                enableSearchHint = prefs.readBoolean(Keys.deepSearch, default.deepProvider.enableSearchHint),
-                reasoningEffort = prefs.readString(Keys.deepReasoning, default.deepProvider.reasoningEffort),
-            ),
             maxWaitTimeoutSeconds = prefs.readInt(Keys.maxWait, default.maxWaitTimeoutSeconds)
                 .coerceIn(MIN_WAIT_SECONDS, MAX_WAIT_SECONDS),
+            autoCaptureIntervalSeconds = prefs.readInt(Keys.autoCaptureInterval, default.autoCaptureIntervalSeconds)
+                .coerceIn(1, 5),
             useVisionWhenOcrWeak = prefs.readBoolean(Keys.useVision, default.useVisionWhenOcrWeak),
             showImagePreview = prefs.readBoolean(Keys.showPreview, default.showImagePreview),
             overlayAlpha = prefs.readFloat(Keys.overlayAlpha, default.overlayAlpha).coerceIn(0.35f, 1f),
             clickThrough = prefs.readBoolean(Keys.clickThrough, default.clickThrough),
             questionBankMode = prefs.readBoolean(Keys.questionBankMode, default.questionBankMode),
+            bankMatchThreshold = prefs.readFloat(Keys.bankMatchThreshold, default.bankMatchThreshold)
+                .coerceIn(AppSettings.BANK_MATCH_MIN, AppSettings.BANK_MATCH_MAX),
             roi = roi,
+            answerMode = com.quizassist.model.AnswerMode.from(prefs.readString(Keys.answerMode, "")),
         )
     }
 
@@ -113,11 +116,33 @@ class SettingsStore(context: Context) {
         }
 
     private fun migratePlaintextApiKeys() {
-        listOf(Keys.flashApiKey, Keys.deepApiKey).forEach { key ->
+        listOf(Keys.flashApiKey).forEach { key ->
             val stored = prefs.getString(key, null).orEmpty()
             if (stored.isNotBlank() && !stored.startsWith(ApiKeyCipher.PREFIX)) {
                 prefs.edit().putString(key, keyCipher.encrypt(stored)).commit()
             }
+        }
+    }
+
+    /** 旧版本默认截图区域为「上 14% 起、高 65%、宽 98%」，现统一迁移为「屏幕底部 65%」。 */
+    private fun migrateRoiDefault() {
+        if (!prefs.contains(Keys.roiLeft)) return
+        val left = prefs.getString(Keys.roiLeft, null)?.toFloatOrNull()
+        val top = prefs.getString(Keys.roiTop, null)?.toFloatOrNull()
+        val width = prefs.getString(Keys.roiWidth, null)?.toFloatOrNull()
+        val height = prefs.getString(Keys.roiHeight, null)?.toFloatOrNull()
+        val isOldDefault = left != null && top != null && width != null && height != null &&
+            kotlin.math.abs(left - 0.01f) < 1e-4f &&
+            kotlin.math.abs(top - 0.14f) < 1e-4f &&
+            kotlin.math.abs(width - 0.98f) < 1e-4f &&
+            kotlin.math.abs(height - 0.65f) < 1e-4f
+        if (isOldDefault) {
+            prefs.edit()
+                .putString(Keys.roiLeft, "0.0")
+                .putString(Keys.roiTop, "0.35")
+                .putString(Keys.roiWidth, "1.0")
+                .putString(Keys.roiHeight, "0.65")
+                .apply()
         }
     }
 
@@ -163,22 +188,19 @@ class SettingsStore(context: Context) {
         const val flashTemperature = "flash_temperature"
         const val flashSearch = "flash_search"
         const val flashReasoning = "flash_reasoning"
-        const val deepBaseUrl = "deep_base_url"
-        const val deepApiKey = "deep_api_key"
-        const val deepModel = "deep_model"
-        const val deepTemperature = "deep_temperature"
-        const val deepSearch = "deep_search"
-        const val deepReasoning = "deep_reasoning"
         const val maxWait = "max_wait"
         const val useVision = "use_vision"
         const val showPreview = "show_preview"
         const val overlayAlpha = "overlay_alpha"
         const val clickThrough = "click_through"
         const val questionBankMode = "question_bank_mode"
+        const val bankMatchThreshold = "bank_match_threshold"
+        const val autoCaptureInterval = "auto_capture_interval"
         const val roiLeft = "roi_left"
         const val roiTop = "roi_top"
         const val roiWidth = "roi_width"
         const val roiHeight = "roi_height"
+        const val answerMode = "answer_mode"
     }
 
     private companion object {
@@ -191,8 +213,8 @@ private class ApiKeyCipher {
     fun encrypt(value: String): String {
         if (value.isBlank()) return ""
         val cipher = Cipher.getInstance(TRANSFORMATION)
-        val iv = ByteArray(IV_SIZE).also(SecureRandom()::nextBytes)
-        cipher.init(Cipher.ENCRYPT_MODE, secretKey(), GCMParameterSpec(TAG_BITS, iv))
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey())
+        val iv = cipher.iv ?: error("Keystore 未返回加密 IV")
         val encrypted = cipher.doFinal(value.toByteArray(Charsets.UTF_8))
         val payload = ByteBuffer.allocate(iv.size + encrypted.size).put(iv).put(encrypted).array()
         return PREFIX + Base64.encodeToString(payload, Base64.NO_WRAP)
