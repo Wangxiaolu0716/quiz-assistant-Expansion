@@ -13,7 +13,7 @@ Android 截图答题工具。系统截图 → 本地 OCR → 你配置的 AI 接
 | 网盘 | <https://share.feijipan.com/s/xbxbXQzH> | 提取码 **1006**，不限速 |
 | GitHub | [Releases](https://github.com/Wangxiaolu0716/quiz-assistant-Expansion/releases) | 源码与历史包 |
 
-当前版本 **2.5.14**（versionCode 20514）
+当前版本 **2.5.15**（versionCode 20515）
 
 ```
 sha256 见 Release 页附件说明
@@ -165,6 +165,13 @@ python tools/publish_github.py <apk> --tag v2.5.9 --notes-file <说明文件>
 ---
 
 ## 更新日志
+
+### 2.5.15
+
+- 选项白名单：答案字母必须在 OCR 选项里出现过，否则提示
+- 双采样复核（开关）：同一题问两次，不一致就明说
+- 低置信度低于 70% 在答案下标出来
+- 清洗逻辑抽成 AnswerSanitizer
 
 ### 2.5.14
 

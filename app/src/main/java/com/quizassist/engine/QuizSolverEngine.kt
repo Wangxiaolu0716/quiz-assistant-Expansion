@@ -1,5 +1,6 @@
 package com.quizassist.engine
 
+import com.quizassist.prompt.AnswerSanitizer
 import android.graphics.Bitmap
 import com.quizassist.cache.AnswerCache
 import com.quizassist.image.BitmapTools
@@ -90,18 +91,60 @@ class QuizSolverEngine(
             return@channelFlow
         }
 
+        // 同一次提问；双采样时多跑一遍
+        suspend fun askOnce(): String {
+            val buffer = StringBuilder()
+            withTimeoutOrNull(settings.maxWaitTimeoutSeconds * 1000L) {
+                llmRepository.streamAnswer(settings.flashProvider, input).collect { token ->
+                    buffer.append(token)
+                }
+            } ?: error("快速模型超时，请稍后重试")
+            return buffer.toString()
+        }
+
         val raw = StringBuilder()
         try {
-            val elapsed = measureTimeMillis {
-                withTimeoutOrNull(settings.maxWaitTimeoutSeconds * 1000L) {
-                    llmRepository.streamAnswer(settings.flashProvider, input).collect { token ->
-                        raw.append(token)
-                    }
-                } ?: error("快速模型超时，请稍后重试")
+            val startedAt = System.currentTimeMillis()
+            val first = askOnce()
+            raw.append(first)
+
+            val answer = if (settings.doubleCheck) {
+                // 第二遍：只比最终答案，不一致就明说，不替用户选
+                val second = runCatching { askOnce() }.getOrNull()
+                val a = AnswerSanitizer.extract(first)
+                val b = second?.let { AnswerSanitizer.extract(it) }.orEmpty()
+                when {
+                    second == null -> llmRepository.parseStructuredAnswer(first)
+                        .copy(warning = "复核那一遍失败了，只用第一遍结果")
+                    a.isBlank() || b.isBlank() -> llmRepository.parseStructuredAnswer(first)
+                        .copy(warning = "有一遍没抓到答案，结果仅供参考")
+                    AnswerSanitizer.same(a, b) -> llmRepository.parseStructuredAnswer(first)
+                    else -> llmRepository.parseStructuredAnswer(first).copy(
+                        answer = "",
+                        warning = "两次结果不一致（" + a + " / " + b + "），建议重拍",
+                    )
+                }
+            } else {
+                llmRepository.parseStructuredAnswer(first)
             }
-            val answer = llmRepository.parseStructuredAnswer(raw.toString())
-            send(SolveEvent.FlashAnswer(answer, elapsed))
-            answerCache.save(input.cacheKey, questionText, answer)
+
+            // 选项白名单：答案字母得真的出现在 OCR 里
+            val optionWarning = AnswerSanitizer.checkOption(answer.answer, questionText)
+            val confidence = AnswerSanitizer.parseConfidence(answer.confidence)
+            val lowConfidence = if (confidence in 0..69) "置信度偏低 " + confidence + "%" else ""
+
+            val finalAnswer = answer.copy(
+                warning = listOf(answer.warning, optionWarning, lowConfidence)
+                    .filter { it.isNotBlank() }
+                    .distinct()
+                    .joinToString("；"),
+            )
+
+            val elapsed = System.currentTimeMillis() - startedAt
+            send(SolveEvent.FlashAnswer(finalAnswer, elapsed))
+            if (finalAnswer.warning.isBlank()) {
+                answerCache.save(input.cacheKey, questionText, finalAnswer)
+            }
         } catch (cancel: CancellationException) {
             throw cancel
         } catch (t: Throwable) {

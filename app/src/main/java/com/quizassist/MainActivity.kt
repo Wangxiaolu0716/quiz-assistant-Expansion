@@ -878,6 +878,16 @@ private fun AnswerTab(
         }
     }
 
+    Card8("准确率", "多花一点时间换更稳的答案") {
+        SwitchRow(Zh.doubleCheck, draft.doubleCheck) { onChange(draft.copy(doubleCheck = it)) }
+        Text(
+            Zh.doubleCheckHint,
+            fontSize = 11.5.sp,
+            color = Ink.faint,
+            lineHeight = 16.sp,
+        )
+    }
+
     Card8("识别与悬浮窗", "等待时间、截图区域、透明度") {
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             NumberField(Zh.maxWaitShort, maxWaitText, onMaxWaitChange, Modifier.weight(1f))
@@ -1370,6 +1380,8 @@ private object Zh {
     const val noQuestionBank = "尚未导入题库"
     const val importBank = "导入题库"
     const val clearBank = "清除"
+    const val doubleCheck = "双采样复核"
+    const val doubleCheckHint = "同一题问两次，答案一致才采用。选择题更稳，代价是等待时间翻倍；题库命中的题不受影响。"
     const val enableBank = "启用本地题库"
     const val maxWaitShort = "最大等待（秒）"
     const val intervalShort = "截图间隔（秒）"

@@ -38,6 +38,12 @@ data class AppSettings(
     val roi: RoiBox? = RoiBox(0f, 0.35f, 1f, 0.65f),
     /** 输出风格，见 [AnswerMode]。 */
     val answerMode: AnswerMode = AnswerMode.ANSWER,
+
+    /**
+     * 双采样复核：同一题问两次，答案一致才采用。
+     * 提高准确率，代价是延迟翻倍 —— 默认关。
+     */
+    val doubleCheck: Boolean = false,
 ) {
     companion object {
         const val BANK_MATCH_MIN = 0.20f
@@ -86,6 +92,8 @@ data class StructuredAnswer(
     val sources: List<String> = emptyList(),
     val raw: String = "",
     val localCorrect: Boolean? = null,
+    /** 自检提示，非空时在悬浮窗上标出来（选项对不上、两次采样打架等）。 */
+    val warning: String = "",
 ) {
     val hasAnswer: Boolean get() = answer.isNotBlank() || raw.isNotBlank()
 }

@@ -59,6 +59,7 @@ class SettingsStore(context: Context) {
             .putString(Keys.overlayAlpha, next.overlayAlpha.coerceIn(0.35f, 1f).toString())
             .putString(Keys.clickThrough, next.clickThrough.toString())
             .putString(Keys.questionBankMode, next.questionBankMode.toString())
+            .putString(Keys.doubleCheck, next.doubleCheck.toString())
             .putString(Keys.bankMatchThreshold, next.bankMatchThreshold.coerceIn(AppSettings.BANK_MATCH_MIN, AppSettings.BANK_MATCH_MAX).toString())
             .putString(Keys.autoCaptureInterval, next.autoCaptureIntervalSeconds.coerceIn(1, 5).toString())
             .putString(Keys.answerMode, next.answerMode.key)
@@ -99,6 +100,7 @@ class SettingsStore(context: Context) {
             overlayAlpha = prefs.readFloat(Keys.overlayAlpha, default.overlayAlpha).coerceIn(0.35f, 1f),
             clickThrough = prefs.readBoolean(Keys.clickThrough, default.clickThrough),
             questionBankMode = prefs.readBoolean(Keys.questionBankMode, default.questionBankMode),
+            doubleCheck = prefs.readBoolean(Keys.doubleCheck, default.doubleCheck),
             bankMatchThreshold = prefs.readFloat(Keys.bankMatchThreshold, default.bankMatchThreshold)
                 .coerceIn(AppSettings.BANK_MATCH_MIN, AppSettings.BANK_MATCH_MAX),
             roi = roi,
@@ -194,6 +196,7 @@ class SettingsStore(context: Context) {
         const val overlayAlpha = "overlay_alpha"
         const val clickThrough = "click_through"
         const val questionBankMode = "question_bank_mode"
+        const val doubleCheck = "double_check"
         const val bankMatchThreshold = "bank_match_threshold"
         const val autoCaptureInterval = "auto_capture_interval"
         const val roiLeft = "roi_left"
