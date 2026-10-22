@@ -409,8 +409,14 @@ class LLMRepository(
     companion object {
         private const val FLASH_TIMEOUT_SECONDS = 15L
 
-        /** 非联网模式输出上限：两行短答案足够，留一点余量防截断。 */
-        private const val DEFAULT_MAX_TOKENS = 96
+        /**
+         * 非联网模式输出上限。
+         *
+         * 原来是 96 —— 这是「假设模型乖乖只输出两行」的算法。现实是很多模型会先把
+         * 「我们需要回答用户：…」这类推理写进正文，96 个 token 全被思考吃光，
+         * 答案还没出来就被截断了。给到 640：思考写完还有富余。
+         */
+        private const val DEFAULT_MAX_TOKENS = 640
 
         /** 联网模式输出上限：要装下 JSON + 简短依据。 */
         private const val RESPONSES_MAX_OUTPUT_TOKENS = 512

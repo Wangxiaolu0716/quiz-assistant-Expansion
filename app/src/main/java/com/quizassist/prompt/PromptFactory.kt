@@ -107,10 +107,20 @@ object PromptFactory {
         """【输出】只输出一行 JSON，不要代码块，不要任何多余文字：
 {"answer":"答案","confidence":"0-100%","reasoning":"不超过20字的依据"}"""
 
-    /** 快速模式系统提示词：推理指引 + 当前模式的输出契约。 */
+    /**
+     * 快速模式系统提示词：推理指引 + 当前模式的输出契约。
+     *
+     * 远程下发的提示词只有足够完整（>= 60 字）时才整体替换本地版本；
+     * 否则只当作补充要求追加。之前后台配了一句「仅显示答案即可」，
+     * 把「先还原题干、字母白名单、不许写过程」整套约束全冲掉了，
+     * 模型于是开始自言自语，再被 maxTokens 截断 —— 用户看到的就是
+     * 「我们需要回答用户：需要只输出一行 json…」然后没了。
+     */
     fun flashSystem(): String {
-        val base = RemoteRuntime.flashSystem().ifBlank { FLASH_REASONING }
-        return base + "\n\n" + outputContract(answerMode)
+        val remote = RemoteRuntime.flashSystem()
+        val base = if (remote.length >= 60) remote else FLASH_REASONING
+        val supplement = if (remote.isNotBlank() && remote.length < 60) "\n\n补充要求：$remote" else ""
+        return base + supplement + "\n\n" + outputContract(answerMode)
     }
 
     /** 联网模式系统提示词：同样按模式切换 JSON 契约。 */

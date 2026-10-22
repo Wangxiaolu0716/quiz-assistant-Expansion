@@ -13,7 +13,7 @@ Android 截图答题工具。系统截图 → 本地 OCR → 你配置的 AI 接
 | 网盘 | <https://share.feijipan.com/s/xbxbXQzH> | 提取码 **1006**，不限速 |
 | GitHub | [Releases](https://github.com/Wangxiaolu0716/quiz-assistant-Expansion/releases) | 源码与历史包 |
 
-当前版本 **2.5.9**（versionCode 20509）
+当前版本 **2.5.10**（versionCode 20510）
 
 ```
 sha256 见 Release 页附件说明
@@ -165,6 +165,12 @@ python tools/publish_github.py <apk> --tag v2.5.9 --notes-file <说明文件>
 ---
 
 ## 更新日志
+
+### 2.5.10
+
+- 修复答题输出变成「我们需要回答用户…」后被截断：输出上限 96 → 640
+- 远程提示词不足 60 字时不再覆盖内置规则，只作补充
+- 悬浮窗显示前先摘出真正的答案，自言自语的行丢掉
 
 ### 2.5.9
 

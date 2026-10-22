@@ -281,25 +281,67 @@ object OverlayController {
      * 顺手把「答案：」「解析：」这类前缀剥掉，模型爱加，用户不想看。
      */
     private fun com.quizassist.model.StructuredAnswer.flashDisplayText(): String {
-        val text = raw.takeIf { it.isNotBlank() } ?: displayText()
+        val text = raw.takeIf { it.isNotBlank() }
+            ?: answer.takeIf { it.isNotBlank() }
+            ?: displayText()
         return text.toOverlayText(com.quizassist.prompt.PromptFactory.answerMode())
     }
 
     private fun String.toOverlayText(mode: com.quizassist.model.AnswerMode): String {
-        val lines = replace(Regex("""(?i)\bassistant\b[:：]?\s*"""), "")
-            .lines()
-            .map { it.trim().stripAnswerLabel() }
-            .filter { it.isNotBlank() }
-        if (lines.isEmpty()) return ""
+        val answer = extractAnswer()
+        if (answer.isBlank()) return ""
         return if (mode == com.quizassist.model.AnswerMode.BRIEF) {
-            lines.take(2).joinToString("\n")
+            val lines = answer.lines().map { it.trim() }.filter { it.isNotBlank() }
+            lines.take(2).joinToString("\n").take(160)
         } else {
-            lines.first().take(60)
+            answer.lineSequence().firstOrNull { it.isNotBlank() }.orEmpty().take(60)
         }
+    }
+
+    /**
+     * 从模型输出里捞出真正的答案。
+     *
+     * 带思考的模型会把「我们需要回答用户：…」「首先看题干…」写进正文，最后才给答案；
+     * maxTokens 不够时甚至只剩思考。这里按优先级兜底：
+     *   1. 显式的「答案：xxx」「Answer: xxx」——取最后一次出现
+     *   2. 长得像答案的行（单个字母 / A,C / 正确 / 错误 / √）——从后往前找
+     *   3. 过滤掉明显的思考行后，取最后一行
+     */
+    private fun String.extractAnswer(): String {
+        val cleaned = replace(Regex("""(?i)\bassistant\b[:：]?\s*"""), "").trim()
+        if (cleaned.isEmpty()) return ""
+
+        Regex("""(?:最终答案|正确答案|答案|Answer)\s*[:：]\s*([^
+]+)""")
+            .findAll(cleaned)
+            .lastOrNull()
+            ?.groupValues?.getOrNull(1)
+            ?.trim()
+            ?.stripAnswerLabel()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { return it }
+
+        val lines = cleaned.lines().map { it.trim().stripAnswerLabel() }.filter { it.isNotBlank() }
+        if (lines.isEmpty()) return ""
+
+        lines.lastOrNull { ANSWER_SHAPE.matches(it) }?.let { return it }
+
+        return (lines.filterNot { THINKING_HINT.containsMatchIn(it) }.lastOrNull()
+            ?: lines.lastOrNull()).orEmpty()
     }
 
     private fun String.stripAnswerLabel(): String =
         replace(Regex("""^(答案|答|选|选择|正确选项|解析|理由|依据|分析)\s*[:：]\s*"""), "").trim()
+
+    /** 单个字母、字母组合、判断词，或者很短的选项式文本。 */
+    private val ANSWER_SHAPE = Regex(
+        """^(?:[A-D](?:\s*[,，、/]\s*[A-D])*|[A-D][\.、．:：]\s*\S{0,20}|正确|错误|对|错|√|×|T|F|true|false|[^\p{Punct}\s]{1,12})$""",
+    )
+
+    /** 明显的自言自语开头，命中的行在兜底时会被丢掉。 */
+    private val THINKING_HINT = Regex(
+        """^(?:我们需要|我们|首先|接下来|然后|分析|根据题目|题干|用户|需要|先|让我|好的|嗯|这个题目|考虑到|综上|因此|所以要求|按照要求之)""",
+    )
 
     private fun SolveMode.displayName(): String = when (this) {
         SolveMode.TextOnly -> "文本"
